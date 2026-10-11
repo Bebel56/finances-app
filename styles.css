@@ -275,3 +275,16 @@ button { cursor: pointer; }
 .bascule button.actif { background: var(--carte); color: var(--texte); font-weight: 600; }
 .dates { font-size: 13px; color: var(--texte-2); text-align: right; }
 .par-jour { font-size: 14px; color: var(--texte-2); margin: -4px 0 12px; }
+
+/* ── Comptes courants d'associé ────────────────────────── */
+.titre-section.espace { margin-top: 24px; }
+.ligne-compte {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 0 0 12px; border: none; background: none; text-align: left;
+}
+.ligne-compte .nom { display: block; font-size: 15px; }
+.ligne-compte .detail { display: block; font-size: 12px; color: var(--texte-3); margin-top: 2px; }
+.ligne-compte .du { font-size: 13px; color: var(--texte-2); white-space: nowrap; text-align: right; }
+.ligne-compte .du strong { display: block; font-size: 16px; font-weight: 600; color: var(--texte); }
+.carte > .note { margin: 0; }
+.filtre { flex-wrap: wrap; }

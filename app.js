@@ -10,7 +10,17 @@ const MOIS_ABREGES = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.",
 const MOIS_COURTS = ["jan", "fév", "mar", "avr", "mai", "jun", "jul", "aoû", "sep", "oct", "nov", "déc"];
 const MOIS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
 
-const NATURES = { salaire: "Salaire", dividendes: "Dividendes", remboursement: "Remboursement", autre: "Autre" };
+// Nature d'une entrée d'argent. Les revenus comptent dans le budget ; le reste n'est ni revenu ni dépense.
+const NATURES = {
+  salaire: "Salaire", dividendes: "Dividendes", autre: "Autre revenu",
+  compte_courant: "Compte courant d'associé", desepargne: "Désépargne", remboursement: "Remboursement reçu",
+};
+const NATURES_REVENU = ["salaire", "dividendes", "autre"];
+const NATURES_HORS_BUDGET = ["compte_courant", "desepargne", "remboursement"];
+const TYPES = {
+  depense: "Dépense", entree: "Entrée", virement_interne: "Virement interne",
+  compte_courant: "Compte courant d'associé", desepargne: "Désépargne", remboursement: "Remboursement reçu",
+};
 
 function lireMode() {
   try { return localStorage.getItem("mode") === "paie" ? "paie" : "mois"; } catch { return "mois"; }
@@ -32,6 +42,9 @@ const etat = {
   mois: null,
   operations: [],          // opérations du mois affiché
   categories: [],
+  comptesCourants: [],     // { societe, apports, remboursements, solde }
+  societe: null,           // société dont on consulte les mouvements (toutes dates)
+  mouvementsSociete: [],
   recherche: "",
   filtreCategorie: null,
   fiche: null,             // transaction_id de l'opération ouverte
@@ -148,10 +161,23 @@ async function chargerFlux() {
   etat.listeMois = data.map((l) => l[cle()]);
 }
 
+async function chargerComptesCourants() {
+  const { data, error } = await sb.from("comptes_courants").select("societe, apports, remboursements, solde").order("societe");
+  if (error) throw error;
+  etat.comptesCourants = data;
+  if (etat.societe) {
+    const mouvements = await sb.from("transactions").select("*").eq("type_flux", "compte_courant")
+      .eq("societe", etat.societe).order("date_operation", { ascending: false });
+    if (mouvements.error) throw mouvements.error;
+    etat.mouvementsSociete = mouvements.data;
+  }
+}
+
 async function chargerReferences() {
   const [, categories] = await Promise.all([
     chargerFlux(),
     sb.from("categories").select("categorie").order("categorie"),
+    chargerComptesCourants(),
   ]);
   if (categories.error) throw categories.error;
 
@@ -248,7 +274,7 @@ async function enregistrer(fonction, parametres, messageOk) {
   // Qualifier un salaire peut créer ou supprimer une période : on recharge aussi la liste
   await chargerFlux();
   if (!etat.listeMois.includes(etat.mois)) etat.mois = etat.listeMois[etat.listeMois.length - 1] ?? null;
-  await chargerMois();
+  await Promise.all([chargerMois(), chargerComptesCourants()]);
   etat.cleEvolution = null;   // les totaux ont changé : à recharger à la prochaine visite d'Évolution
   afficherMessage(messageOk);
 }
@@ -370,7 +396,16 @@ function ecranSynthese() {
       <button class="ligne-cat" data-action="filtrer" data-categorie="${echapper(nom)}">
         <div class="haut"><span>${echapper(nom)}</span><span>${eurosRonds.format(montant)}</span></div>
         <div class="jauge ${nom === A_CLASSER ? "a-classer" : ""}"><div style="width:${max ? Math.max(2, Math.round((montant / max) * 100)) : 0}%"></div></div>
-      </button>`).join("")}</div>` : `<p class="vide">Aucune dépense ce mois-ci.</p>`}`;
+      </button>`).join("")}</div>` : `<p class="vide">Aucune dépense ce mois-ci.</p>`}
+    ${etat.comptesCourants.length ? `
+    <h2 class="titre-section espace">Comptes courants d'associé</h2>
+    <div class="carte">${etat.comptesCourants.map((c) => `
+      <button class="ligne-compte" data-action="societe" data-societe="${echapper(c.societe)}">
+        <span><span class="nom">${echapper(c.societe)}</span><span class="detail">${eurosRonds.format(c.apports)} apportés · ${eurosRonds.format(c.remboursements)} remboursés</span></span>
+        <span class="du">${Number(c.solde) >= 0 ? "te doit" : "trop perçu"} <strong>${eurosRonds.format(Math.abs(c.solde))}</strong></span>
+      </button>`).join("")}
+      <p class="note">Hors budget : ni dans les dépenses ni dans les entrées. Toutes dates confondues.</p>
+    </div>` : ""}`;
 }
 
 function colonnes(mois, valeurs, max, etiquette) {
@@ -435,12 +470,12 @@ function ecranEvolution() {
 }
 
 function ligneOperation(o) {
-  const signe = o.type_flux === "entree" ? "+" : o.type_flux === "depense" ? "-" : "";
+  const signe = o.sens === "entree" ? "+" : "-";
   let etiquette = "";
   if (o.type_flux === "depense") {
     etiquette = `<span class="etiquette ${o.categorie === A_CLASSER ? "a-classer" : ""}">${echapper(o.categorie === A_CLASSER ? "À classer" : o.categorie)}</span>`;
-  } else if (o.type_flux === "virement_interne") {
-    etiquette = `<span class="etiquette">Virement interne</span>`;
+  } else if (o.type_flux !== "entree") {
+    etiquette = `<span class="etiquette">${echapper(TYPES[o.type_flux] ?? o.type_flux)}</span>`;
   } else if (o.a_qualifier) {
     etiquette = `<span class="etiquette a-classer">À qualifier</span>`;
   } else if (o.nature_entree) {
@@ -450,7 +485,7 @@ function ligneOperation(o) {
     <button class="operation" data-action="ouvrir" data-id="${o.transaction_id}">
       <div class="texte">
         <div class="libelle">${echapper(o.libelle)}</div>
-        <div class="detail"><span>${jourMois(o.date_operation)}</span>${etiquette}${o.est_ajustee ? '<span class="etiquette">Ajustée</span>' : ""}</div>
+        <div class="detail"><span>${etat.societe ? o.date_operation.split("-").reverse().join("/") : jourMois(o.date_operation)}</span>${etiquette}${o.est_ajustee ? '<span class="etiquette">Ajustée</span>' : ""}</div>
       </div>
       <div class="montant ${o.type_flux === "entree" ? "positif" : ""}">${signe}${euros.format(o.montant)}</div>
     </button>`;
@@ -458,12 +493,13 @@ function ligneOperation(o) {
 
 function ecranOperations() {
   const q = etat.recherche.trim().toLowerCase();
-  let liste = etat.operations;
+  let liste = etat.societe ? etat.mouvementsSociete : etat.operations;
   if (etat.filtreCategorie) liste = liste.filter((o) => o.type_flux === "depense" && o.categorie === etat.filtreCategorie);
   if (q) liste = liste.filter((o) => o.libelle.toLowerCase().includes(q));
 
   return `
     <input class="recherche" id="recherche" type="search" placeholder="Leclerc, SNCF, café" aria-label="Rechercher une opération" value="${echapper(etat.recherche)}">
+    ${etat.societe ? `<div class="filtre"><span>Compte courant · ${echapper(etat.societe)} · toutes dates</span><button data-action="societe" data-societe="">Revenir au mois</button></div>` : ""}
     ${etat.filtreCategorie ? `<div class="filtre"><span>${echapper(etat.filtreCategorie)}</span><button data-action="filtrer" data-categorie="">Tout afficher</button></div>` : ""}
     ${liste.length ? `<div class="operations">${liste.map(ligneOperation).join("")}</div>` : `<p class="vide">Aucune opération ne correspond.</p>`}`;
 }
@@ -477,10 +513,14 @@ function ecranAClasser() {
 }
 
 function ficheOperation() {
-  const o = etat.operations.find((x) => x.transaction_id === etat.fiche);
+  const o = [...etat.operations, ...etat.mouvementsSociete].find((x) => x.transaction_id === etat.fiche);
   if (!o) return "";
   const estDepense = o.type_flux === "depense";
-  const type = { depense: "Dépense", entree: "Entrée", virement_interne: "Virement interne" }[o.type_flux];
+  // Toute entrée d'argent peut être qualifiée, sauf un virement entre tes propres comptes
+  const estQualifiable = o.sens === "entree" && o.type_flux !== "virement_interne";
+  const type = TYPES[o.type_flux] ?? o.type_flux;
+  const boutonsNature = (liste) => liste.map((valeur) => `
+            <button class="categorie ${valeur === o.nature_entree ? "choisie" : ""}" data-action="qualifier" data-nature="${valeur}">${NATURES[valeur]}</button>`).join("");
 
   return `
     <div class="voile" data-action="fermer">
@@ -507,14 +547,16 @@ function ficheOperation() {
           </form>
           <p class="note">Pour une dépense partagée ou remboursée en partie. Le montant d'origine est conservé.</p>
           ${o.est_ajustee ? `<button class="lien" data-action="annuler-ajustement">Annuler l'ajustement</button>` : ""}
-        ` : o.type_flux === "entree" ? `
-          <h3>Nature de cette entrée</h3>
-          <div class="categories">${Object.entries(NATURES).map(([valeur, nom]) => `
-            <button class="categorie ${valeur === o.nature_entree ? "choisie" : ""}" data-action="qualifier" data-nature="${valeur}">${nom}</button>`).join("")}
-          </div>
-          <p class="note">Un salaire ouvre une nouvelle période de paie. Dividendes, remboursements et autres entrées sont comptés dans la période en cours, sans la couper.</p>
+        ` : estQualifiable ? `
+          <h3>C'est un revenu</h3>
+          <div class="categories">${boutonsNature(NATURES_REVENU)}</div>
+          <p class="note">Compté dans tes entrées. Un salaire ouvre une nouvelle période de paie.</p>
+          <h3>Ce n'est pas un revenu</h3>
+          <div class="categories">${boutonsNature(NATURES_HORS_BUDGET)}</div>
+          <p class="note">Hors budget : argent que tu récupères (apport remboursé par une société, retrait d'épargne, avance remboursée par un proche).</p>
           ${o.nature_entree ? `<button class="lien" data-action="annuler-qualification">Retirer la nature</button>` : ""}
-        ` : `<p class="note">Virement entre tes comptes : il ne compte ni dans les entrées ni dans les dépenses.</p>`}
+        ` : o.type_flux === "compte_courant" ? `<p class="note">Apport en compte courant${o.societe ? ` à ${echapper(o.societe)}` : ""} : hors budget, suivi dans les comptes courants d'associé.</p>`
+          : `<p class="note">Virement entre tes comptes : il ne compte ni dans les entrées ni dans les dépenses.</p>`}
       </section>
     </div>`;
 }
@@ -562,7 +604,7 @@ racine.addEventListener("click", async (evenement) => {
   switch (cible.dataset.action) {
     case "onglet":
       etat.onglet = cible.dataset.onglet;
-      if (etat.onglet !== "operations") etat.filtreCategorie = null;
+      if (etat.onglet !== "operations") { etat.filtreCategorie = null; etat.societe = null; etat.mouvementsSociete = []; }
       window.scrollTo(0, 0);
       rendre();
       if (etat.onglet === "evolution") {
@@ -580,9 +622,23 @@ racine.addEventListener("click", async (evenement) => {
       await changerMois(Number(cible.dataset.decalage));
       break;
     case "filtrer":
+      etat.societe = null;
+      etat.mouvementsSociete = [];
       etat.filtreCategorie = cible.dataset.categorie || null;
       etat.onglet = "operations";
       etat.recherche = "";
+      window.scrollTo(0, 0);
+      rendre();
+      break;
+    case "societe":
+      etat.societe = cible.dataset.societe || null;
+      etat.mouvementsSociete = [];
+      etat.filtreCategorie = null;
+      etat.recherche = "";
+      if (etat.societe) {
+        etat.onglet = "operations";
+        try { await chargerComptesCourants(); } catch (e) { etat.erreur = "Impossible de charger les mouvements."; console.error(e); }
+      }
       window.scrollTo(0, 0);
       rendre();
       break;
