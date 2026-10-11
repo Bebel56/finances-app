@@ -18,7 +18,7 @@ const NATURES = {
 const NATURES_REVENU = ["salaire", "dividendes", "autre"];
 const NATURES_HORS_BUDGET = ["compte_courant", "desepargne", "remboursement"];
 const TYPES = {
-  depense: "Dépense", entree: "Entrée", virement_interne: "Virement interne",
+  depense: "Dépense", entree: "Entrée", virement_interne: "Virement interne", epargne: "Épargne",
   compte_courant: "Compte courant d'associé", desepargne: "Désépargne", remboursement: "Remboursement reçu",
 };
 
@@ -47,6 +47,7 @@ const etat = {
   mouvementsSociete: [],
   recherche: "",
   filtreCategorie: null,
+  filtreType: null,        // { type, sens, nom } : mouvements hors budget d'un type donné
   fiche: null,             // transaction_id de l'opération ouverte
   message: null,
   erreur: null,
@@ -162,7 +163,7 @@ async function chargerFlux() {
 }
 
 async function chargerComptesCourants() {
-  const { data, error } = await sb.from("comptes_courants").select("societe, apports, remboursements, solde").order("societe");
+  const { data, error } = await sb.from("comptes_courants").select("societe, apports, remboursements, net, solde, historique_depuis").order("societe");
   if (error) throw error;
   etat.comptesCourants = data;
   if (etat.societe) {
@@ -246,6 +247,7 @@ async function changerMois(decalage) {
   if (i < 0 || i >= etat.listeMois.length) return;
   etat.mois = etat.listeMois[i];
   etat.filtreCategorie = null;
+  etat.filtreType = null;
   await afficherMois();
 }
 
@@ -397,14 +399,20 @@ function ecranSynthese() {
         <div class="haut"><span>${echapper(nom)}</span><span>${eurosRonds.format(montant)}</span></div>
         <div class="jauge ${nom === A_CLASSER ? "a-classer" : ""}"><div style="width:${max ? Math.max(2, Math.round((montant / max) * 100)) : 0}%"></div></div>
       </button>`).join("")}</div>` : `<p class="vide">Aucune dépense ce mois-ci.</p>`}
+    ${carteHorsBudget()}
     ${etat.comptesCourants.length ? `
     <h2 class="titre-section espace">Comptes courants d'associé</h2>
-    <div class="carte">${etat.comptesCourants.map((c) => `
+    <div class="carte">${etat.comptesCourants.map((c) => {
+      const connu = c.solde !== null;
+      const valeur = Number(connu ? c.solde : c.net);
+      const etiquette = connu ? (valeur >= 0 ? "te doit" : "trop perçu") : (valeur >= 0 ? "net apporté" : "net reçu");
+      return `
       <button class="ligne-compte" data-action="societe" data-societe="${echapper(c.societe)}">
         <span><span class="nom">${echapper(c.societe)}</span><span class="detail">${eurosRonds.format(c.apports)} apportés · ${eurosRonds.format(c.remboursements)} remboursés</span></span>
-        <span class="du">${Number(c.solde) >= 0 ? "te doit" : "trop perçu"} <strong>${eurosRonds.format(Math.abs(c.solde))}</strong></span>
-      </button>`).join("")}
-      <p class="note">Hors budget : ni dans les dépenses ni dans les entrées. Toutes dates confondues.</p>
+        <span class="du">${etiquette} <strong>${eurosRonds.format(Math.abs(valeur))}</strong></span>
+      </button>`;
+    }).join("")}
+      <p class="note">Hors budget. Mouvements depuis ${etat.comptesCourants[0].historique_depuis ? libelleMois(etat.comptesCourants[0].historique_depuis).toLowerCase() : "le début de l'historique"} seulement : ce n'est pas le solde réel du compte courant, les apports antérieurs manquent.</p>
     </div>` : ""}`;
 }
 
@@ -469,6 +477,34 @@ function ecranEvolution() {
     </div>` : `<p class="vide">Aucune dépense sur la période.</p>`}`;
 }
 
+// Ce qui a bougé sur le compte sans être une dépense ni un revenu
+function carteHorsBudget() {
+  const somme = (type, sens) => etat.operations
+    .filter((o) => o.type_flux === type && (!sens || o.sens === sens))
+    .reduce((s, o) => s + Number(o.montant), 0);
+  const lignes = [
+    ["Épargne mise de côté", "epargne", "sortie"],
+    ["Désépargne", "desepargne", "entree"],
+    ["Apports en compte courant", "compte_courant", "sortie"],
+    ["Remboursements de compte courant", "compte_courant", "entree"],
+    ["Remboursements reçus", "remboursement", "entree"],
+  ].map(([nom, type, sens]) => ({ nom, type, sens, montant: somme(type, sens) })).filter((l) => l.montant > 0);
+  if (!lignes.length) return "";
+
+  // Repère : les remboursements reçus devraient correspondre aux dépenses ramenées à ta part
+  const ajustements = depenses().filter((o) => o.est_ajustee).reduce((s, o) => s + Number(o.montant_original) - Number(o.montant), 0);
+  const aDesRemboursements = lignes.some((l) => l.type === "remboursement");
+
+  return `
+    <h2 class="titre-section espace">Hors budget</h2>
+    <div class="carte">${lignes.map((l) => `
+      <button class="ligne-hors" data-action="filtrer-type" data-type="${l.type}" data-sens="${l.sens}" data-nom="${echapper(l.nom)}">
+        <span>${echapper(l.nom)}</span><span>${l.sens === "entree" ? "+" : "-"}${eurosRonds.format(l.montant)}</span>
+      </button>`).join("")}
+      ${aDesRemboursements ? `<p class="note">Dépenses ramenées à ta part (« Montant réel ») : ${eurosRonds.format(ajustements)}.</p>` : ""}
+    </div>`;
+}
+
 function ligneOperation(o) {
   const signe = o.sens === "entree" ? "+" : "-";
   let etiquette = "";
@@ -495,11 +531,13 @@ function ecranOperations() {
   const q = etat.recherche.trim().toLowerCase();
   let liste = etat.societe ? etat.mouvementsSociete : etat.operations;
   if (etat.filtreCategorie) liste = liste.filter((o) => o.type_flux === "depense" && o.categorie === etat.filtreCategorie);
+  if (etat.filtreType) liste = liste.filter((o) => o.type_flux === etat.filtreType.type && o.sens === etat.filtreType.sens);
   if (q) liste = liste.filter((o) => o.libelle.toLowerCase().includes(q));
 
   return `
     <input class="recherche" id="recherche" type="search" placeholder="Leclerc, SNCF, café" aria-label="Rechercher une opération" value="${echapper(etat.recherche)}">
     ${etat.societe ? `<div class="filtre"><span>Compte courant · ${echapper(etat.societe)} · toutes dates</span><button data-action="societe" data-societe="">Revenir au mois</button></div>` : ""}
+    ${etat.filtreType ? `<div class="filtre"><span>${echapper(etat.filtreType.nom)}</span><button data-action="filtrer" data-categorie="">Tout afficher</button></div>` : ""}
     ${etat.filtreCategorie ? `<div class="filtre"><span>${echapper(etat.filtreCategorie)}</span><button data-action="filtrer" data-categorie="">Tout afficher</button></div>` : ""}
     ${liste.length ? `<div class="operations">${liste.map(ligneOperation).join("")}</div>` : `<p class="vide">Aucune opération ne correspond.</p>`}`;
 }
@@ -515,7 +553,8 @@ function ecranAClasser() {
 function ficheOperation() {
   const o = [...etat.operations, ...etat.mouvementsSociete].find((x) => x.transaction_id === etat.fiche);
   if (!o) return "";
-  const estDepense = o.type_flux === "depense";
+  // L'épargne se classe et s'ajuste comme une dépense : c'est sa catégorie qui la sort du budget
+  const estDepense = o.type_flux === "depense" || o.type_flux === "epargne";
   // Toute entrée d'argent peut être qualifiée, sauf un virement entre tes propres comptes
   const estQualifiable = o.sens === "entree" && o.type_flux !== "virement_interne";
   const type = TYPES[o.type_flux] ?? o.type_flux;
@@ -604,7 +643,7 @@ racine.addEventListener("click", async (evenement) => {
   switch (cible.dataset.action) {
     case "onglet":
       etat.onglet = cible.dataset.onglet;
-      if (etat.onglet !== "operations") { etat.filtreCategorie = null; etat.societe = null; etat.mouvementsSociete = []; }
+      if (etat.onglet !== "operations") { etat.filtreCategorie = null; etat.filtreType = null; etat.societe = null; etat.mouvementsSociete = []; }
       window.scrollTo(0, 0);
       rendre();
       if (etat.onglet === "evolution") {
@@ -621,9 +660,16 @@ racine.addEventListener("click", async (evenement) => {
     case "mois":
       await changerMois(Number(cible.dataset.decalage));
       break;
+    case "filtrer-type":
+      Object.assign(etat, { societe: null, mouvementsSociete: [], filtreCategorie: null, recherche: "", onglet: "operations" });
+      etat.filtreType = { type: cible.dataset.type, sens: cible.dataset.sens, nom: cible.dataset.nom };
+      window.scrollTo(0, 0);
+      rendre();
+      break;
     case "filtrer":
       etat.societe = null;
       etat.mouvementsSociete = [];
+      etat.filtreType = null;
       etat.filtreCategorie = cible.dataset.categorie || null;
       etat.onglet = "operations";
       etat.recherche = "";
@@ -634,6 +680,7 @@ racine.addEventListener("click", async (evenement) => {
       etat.societe = cible.dataset.societe || null;
       etat.mouvementsSociete = [];
       etat.filtreCategorie = null;
+      etat.filtreType = null;
       etat.recherche = "";
       if (etat.societe) {
         etat.onglet = "operations";
@@ -686,7 +733,7 @@ racine.addEventListener("click", async (evenement) => {
       if (cible.dataset.mode !== etat.mode) {
         etat.mode = cible.dataset.mode;
         try { localStorage.setItem("mode", etat.mode); } catch { /* stockage indisponible : le choix vaut pour cette session */ }
-        Object.assign(etat, { filtreCategorie: null, cleEvolution: null, finFenetre: null, fiche: null });
+        Object.assign(etat, { filtreCategorie: null, filtreType: null, cleEvolution: null, finFenetre: null, fiche: null });
         await toutCharger();
         if (etat.onglet === "evolution") {
           try { await chargerEvolution(); } catch (e) { etat.erreur = "Impossible de charger l'évolution."; console.error(e); }
