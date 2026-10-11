@@ -225,7 +225,12 @@ button { cursor: pointer; }
 .connexion.activation p { margin-bottom: 16px; }
 .connexion.activation a.lien { display: inline; padding: 0; text-decoration: underline; }
 .qr { display: grid; place-items: center; margin-bottom: 16px; }
-.qr img { background: #ffffff; padding: 10px; border-radius: var(--rayon); }
+/* QR dense (65 modules) : grand, net, avec une vraie marge blanche pour que les applications le lisent */
+.qr img {
+  width: min(300px, 100%); height: auto; aspect-ratio: 1;
+  background: #ffffff; padding: 22px; border-radius: var(--rayon);
+  image-rendering: pixelated;
+}
 .cle {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px;
   background: var(--carte); border-radius: var(--rayon); padding: 10px 12px;

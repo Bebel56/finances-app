@@ -89,7 +89,7 @@ async function demarrerActivation() {
   for (const facteur of existants?.all ?? []) {
     if (facteur.status !== "verified") await sb.auth.mfa.unenroll({ factorId: facteur.id });
   }
-  const { data, error } = await sb.auth.mfa.enroll({ factorType: "totp", friendlyName: "Application de codes" });
+  const { data, error } = await sb.auth.mfa.enroll({ factorType: "totp", friendlyName: "Application de codes", issuer: "Finances" });
   if (error) {
     console.error(error);
     afficherMessage("Activation impossible pour le moment");
@@ -232,7 +232,7 @@ function ecranActivation() {
     <form class="connexion activation" id="activation">
       <h1>Double authentification</h1>
       <p>Ajoute ce compte dans une application de codes (Mots de passe d'Apple, Google Authenticator, 1Password…), puis saisis le code qu'elle affiche.</p>
-      <div class="qr"><img src="${echapper(etat.mfa.qr)}" alt="QR code à scanner avec l'application de codes" width="200" height="200"></div>
+      <div class="qr"><img src="${echapper(etat.mfa.qr)}" alt="QR code à scanner avec l'application de codes"></div>
       <p class="note">Sur ce téléphone, sans pouvoir scanner : <a class="lien" href="${echapper(etat.mfa.uri)}">ouvrir dans l'application de codes</a>, ou saisis cette clé à la main.</p>
       <p class="cle">${echapper(etat.mfa.secret)}</p>
       ${etat.erreur ? `<p class="erreur">${echapper(etat.erreur)}</p>` : ""}
