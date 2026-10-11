@@ -267,7 +267,6 @@ function ecranSynthese() {
       <div class="chiffre"><div class="nom">Dépenses</div><div class="valeur">${eurosRonds.format(t.sorties)}</div></div>
       <div class="chiffre"><div class="nom">Solde</div><div class="valeur ${t.solde >= 0 ? "positif" : "negatif"}">${t.solde >= 0 ? "+" : ""}${eurosRonds.format(t.solde)}</div></div>
     </div>
-    ${etat.doubleAuthActive ? "" : `<button class="bandeau securite" data-action="activer-2fa"><span>Active la double authentification</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>`}
     ${nb ? `<button class="bandeau" data-action="onglet" data-onglet="a-classer"><span>${nb} opération${nb > 1 ? "s" : ""} à classer</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>` : ""}
     <h2 class="titre-section">Dépenses par catégorie</h2>
     ${categories.length ? `<div class="carte">${categories.map(([nom, montant]) => `
