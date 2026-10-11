@@ -14,11 +14,12 @@ const MOIS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", 
 const NATURES = {
   salaire: "Salaire", dividendes: "Dividendes", autre: "Autre revenu",
   compte_courant: "Compte courant d'associé", desepargne: "Désépargne", remboursement: "Remboursement reçu",
+  emprunt: "Emprunt",
 };
 const NATURES_REVENU = ["salaire", "dividendes", "autre"];
-const NATURES_HORS_BUDGET = ["compte_courant", "desepargne", "remboursement"];
+const NATURES_HORS_BUDGET = ["compte_courant", "desepargne", "remboursement", "emprunt"];
 const TYPES = {
-  depense: "Dépense", entree: "Entrée", virement_interne: "Virement interne", epargne: "Épargne",
+  depense: "Dépense", entree: "Entrée", virement_interne: "Virement interne", epargne: "Épargne", emprunt: "Emprunt",
   compte_courant: "Compte courant d'associé", desepargne: "Désépargne", remboursement: "Remboursement reçu",
 };
 
@@ -43,6 +44,7 @@ const etat = {
   operations: [],          // opérations du mois affiché
   categories: [],
   comptesCourants: [],     // { societe, apports, remboursements, solde }
+  emprunts: null,          // { emprunte, rembourse, reste_du, nb_mouvements }
   societe: null,           // société dont on consulte les mouvements (toutes dates)
   mouvementsSociete: [],
   recherche: "",
@@ -166,6 +168,9 @@ async function chargerComptesCourants() {
   const { data, error } = await sb.from("comptes_courants").select("societe, apports, remboursements, net, solde, historique_depuis").order("societe");
   if (error) throw error;
   etat.comptesCourants = data;
+  const emprunts = await sb.from("emprunts").select("emprunte, rembourse, reste_du, nb_mouvements").maybeSingle();
+  if (emprunts.error) throw emprunts.error;
+  etat.emprunts = emprunts.data;
   if (etat.societe) {
     const mouvements = await sb.from("transactions").select("*").eq("type_flux", "compte_courant")
       .eq("societe", etat.societe).order("date_operation", { ascending: false });
@@ -399,7 +404,7 @@ function ecranSynthese() {
         <div class="haut"><span>${echapper(nom)}</span><span>${eurosRonds.format(montant)}</span></div>
         <div class="jauge ${nom === A_CLASSER ? "a-classer" : ""}"><div style="width:${max ? Math.max(2, Math.round((montant / max) * 100)) : 0}%"></div></div>
       </button>`).join("")}</div>` : `<p class="vide">Aucune dépense ce mois-ci.</p>`}
-    ${carteHorsBudget()}
+    ${carteVariation()}
     ${etat.comptesCourants.length ? `
     <h2 class="titre-section espace">Comptes courants d'associé</h2>
     <div class="carte">${etat.comptesCourants.map((c) => {
@@ -413,6 +418,15 @@ function ecranSynthese() {
       </button>`;
     }).join("")}
       <p class="note">Hors budget. Mouvements depuis ${etat.comptesCourants[0].historique_depuis ? libelleMois(etat.comptesCourants[0].historique_depuis).toLowerCase() : "le début de l'historique"} seulement : ce n'est pas le solde réel du compte courant, les apports antérieurs manquent.</p>
+    </div>` : ""}
+    ${etat.emprunts && Number(etat.emprunts.nb_mouvements) > 0 ? `
+    <h2 class="titre-section espace">Emprunts à des proches</h2>
+    <div class="carte">
+      <div class="ligne-compte fixe">
+        <span><span class="nom">Toutes dates confondues</span><span class="detail">${eurosRonds.format(etat.emprunts.emprunte)} empruntés · ${eurosRonds.format(etat.emprunts.rembourse)} remboursés</span></span>
+        <span class="du">${Number(etat.emprunts.reste_du) > 0 ? "reste dû" : Number(etat.emprunts.reste_du) < 0 ? "trop remboursé" : "soldé"} <strong>${eurosRonds.format(Math.abs(etat.emprunts.reste_du))}</strong></span>
+      </div>
+      <p class="note">Hors budget. Un prêt se marque « Emprunt » sur le virement reçu, et chaque mensualité se classe en « Remboursement d'emprunt ».</p>
     </div>` : ""}`;
 }
 
@@ -477,31 +491,43 @@ function ecranEvolution() {
     </div>` : `<p class="vide">Aucune dépense sur la période.</p>`}`;
 }
 
-// Ce qui a bougé sur le compte sans être une dépense ni un revenu
-function carteHorsBudget() {
+// Du solde du budget à ce que le compte a réellement gagné ou perdu, tous mouvements confondus
+function carteVariation() {
+  const signe = (o) => (o.sens === "entree" ? 1 : -1);
   const somme = (type, sens) => etat.operations
-    .filter((o) => o.type_flux === type && (!sens || o.sens === sens))
+    .filter((o) => o.type_flux === type && o.sens === sens)
     .reduce((s, o) => s + Number(o.montant), 0);
+  const t = totaux();
+
   const lignes = [
     ["Épargne mise de côté", "epargne", "sortie"],
     ["Désépargne", "desepargne", "entree"],
     ["Apports en compte courant", "compte_courant", "sortie"],
     ["Remboursements de compte courant", "compte_courant", "entree"],
+    ["Emprunts reçus", "emprunt", "entree"],
+    ["Remboursements d'emprunt", "emprunt", "sortie"],
     ["Remboursements reçus", "remboursement", "entree"],
+    ["Virements internes reçus", "virement_interne", "entree"],
+    ["Virements internes émis", "virement_interne", "sortie"],
   ].map(([nom, type, sens]) => ({ nom, type, sens, montant: somme(type, sens) })).filter((l) => l.montant > 0);
-  if (!lignes.length) return "";
 
-  // Repère : les remboursements reçus devraient correspondre aux dépenses ramenées à ta part
-  const ajustements = depenses().filter((o) => o.est_ajustee).reduce((s, o) => s + Number(o.montant_original) - Number(o.montant), 0);
-  const aDesRemboursements = lignes.some((l) => l.type === "remboursement");
+  // Les dépenses ramenées à ta part ont quand même été débitées en entier
+  const avance = depenses().reduce((s, o) => s + Number(o.montant_original) - Number(o.montant), 0);
+  // Ce que le compte a réellement gagné ou perdu : toutes les opérations, à leur montant débité ou crédité
+  const variation = etat.operations.reduce((s, o) => s + signe(o) * Number(o.montant_original), 0);
+  const montantSigne = (v) => `${v >= 0 ? "+" : "-"}${eurosRonds.format(Math.abs(v))}`;
 
   return `
-    <h2 class="titre-section espace">Hors budget</h2>
-    <div class="carte">${lignes.map((l) => `
+    <h2 class="titre-section espace">Variation du compte</h2>
+    <div class="carte">
+      <div class="ligne-hors fixe"><span>Solde du budget</span><span>${montantSigne(t.solde)}</span></div>
+      ${avance > 0.005 ? `<div class="ligne-hors fixe"><span>Avancé pour d'autres ou remboursé</span><span>${montantSigne(-avance)}</span></div>` : ""}
+      ${lignes.map((l) => `
       <button class="ligne-hors" data-action="filtrer-type" data-type="${l.type}" data-sens="${l.sens}" data-nom="${echapper(l.nom)}">
-        <span>${echapper(l.nom)}</span><span>${l.sens === "entree" ? "+" : "-"}${eurosRonds.format(l.montant)}</span>
+        <span>${echapper(l.nom)}</span><span>${montantSigne(l.sens === "entree" ? l.montant : -l.montant)}</span>
       </button>`).join("")}
-      ${aDesRemboursements ? `<p class="note">Dépenses ramenées à ta part (« Montant réel ») : ${eurosRonds.format(ajustements)}.</p>` : ""}
+      <div class="ligne-hors fixe total"><span>Ton compte a ${variation >= 0 ? "gagné" : "perdu"}</span><span class="${variation >= 0 ? "positif" : "negatif"}">${montantSigne(variation)}</span></div>
+      <p class="note">Le solde du budget dit si tu as dépensé plus que tes revenus. La variation du compte ajoute tout le reste : épargne, emprunts, comptes courants, remboursements.</p>
     </div>`;
 }
 
@@ -554,7 +580,7 @@ function ficheOperation() {
   const o = [...etat.operations, ...etat.mouvementsSociete].find((x) => x.transaction_id === etat.fiche);
   if (!o) return "";
   // L'épargne se classe et s'ajuste comme une dépense : c'est sa catégorie qui la sort du budget
-  const estDepense = o.type_flux === "depense" || o.type_flux === "epargne";
+  const estDepense = o.sens === "sortie" && ["depense", "epargne", "emprunt"].includes(o.type_flux);
   // Toute entrée d'argent peut être qualifiée, sauf un virement entre tes propres comptes
   const estQualifiable = o.sens === "entree" && o.type_flux !== "virement_interne";
   const type = TYPES[o.type_flux] ?? o.type_flux;
@@ -592,7 +618,7 @@ function ficheOperation() {
           <p class="note">Compté dans tes entrées. Un salaire ouvre une nouvelle période de paie.</p>
           <h3>Ce n'est pas un revenu</h3>
           <div class="categories">${boutonsNature(NATURES_HORS_BUDGET)}</div>
-          <p class="note">Hors budget : argent que tu récupères (apport remboursé par une société, retrait d'épargne, avance remboursée par un proche).</p>
+          <p class="note">Hors budget : argent que tu récupères (apport remboursé par une société, retrait d'épargne, avance remboursée par un proche) ou que tu devras rendre (emprunt).</p>
           ${o.nature_entree ? `<button class="lien" data-action="annuler-qualification">Retirer la nature</button>` : ""}
         ` : o.type_flux === "compte_courant" ? `<p class="note">Apport en compte courant${o.societe ? ` à ${echapper(o.societe)}` : ""} : hors budget, suivi dans les comptes courants d'associé.</p>`
           : `<p class="note">Virement entre tes comptes : il ne compte ni dans les entrées ni dans les dépenses.</p>`}

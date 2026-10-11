@@ -295,3 +295,7 @@ button { cursor: pointer; }
 }
 .ligne-hors span:first-child { color: var(--texte-2); }
 .ligne-hors span:last-child { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+div.ligne-hors.fixe, div.ligne-compte.fixe { cursor: default; }
+.ligne-hors.total { border-top: 1px solid var(--trait); padding-top: 12px; font-weight: 600; }
+.ligne-hors.total span:first-child { color: var(--texte); }
