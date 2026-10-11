@@ -218,3 +218,17 @@ button { cursor: pointer; }
   background: var(--texte); color: var(--fond);
   padding: 10px 16px; border-radius: 999px; font-size: 14px; white-space: nowrap;
 }
+
+/* ── Double authentification ───────────────────────────── */
+.connexion .lien { display: block; width: 100%; text-align: center; padding-top: 16px; }
+.connexion.activation { padding-top: 4vh; }
+.connexion.activation p { margin-bottom: 16px; }
+.connexion.activation a.lien { display: inline; padding: 0; text-decoration: underline; }
+.qr { display: grid; place-items: center; margin-bottom: 16px; }
+.qr img { background: #ffffff; padding: 10px; border-radius: var(--rayon); }
+.cle {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px;
+  background: var(--carte); border-radius: var(--rayon); padding: 10px 12px;
+  overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; color: var(--texte) !important;
+}
+.bandeau.securite { background: var(--accent-fond); color: var(--accent); margin-bottom: 8px; }

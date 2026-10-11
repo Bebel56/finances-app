@@ -10,6 +10,9 @@ const MOIS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", 
 
 const etat = {
   session: null,
+  ecran: null,             // null (application) | "code" | "activation"
+  doubleAuthActive: false,
+  mfa: null,               // activation en cours : { factorId, qr, secret, uri }
   onglet: "synthese",      // synthese | operations | a-classer
   listeMois: [],           // "2026-09-01", du plus ancien au plus récent
   mois: null,
@@ -56,6 +59,58 @@ function afficherMessage(texte) {
   rendre();
   clearTimeout(afficherMessage.minuteur);
   afficherMessage.minuteur = setTimeout(() => { etat.message = null; rendre(); }, 2500);
+}
+
+// ── Double authentification ────────────────────────────────────────────────────
+// Après le mot de passe : si un code est attendu, on le demande avant tout chargement.
+// La base applique la même règle, l'application ne fait que guider.
+async function apresConnexion() {
+  racine.innerHTML = '<p class="chargement">Chargement…</p>';
+  const { data, error } = await sb.auth.mfa.getAuthenticatorAssuranceLevel();
+  if (error) {
+    console.error(error);
+    await sb.auth.signOut();
+    return;
+  }
+  etat.doubleAuthActive = data.nextLevel === "aal2";
+  if (data.nextLevel === "aal2" && data.currentLevel !== "aal2") {
+    etat.ecran = "code";
+    etat.erreur = null;
+    rendre();
+    return;
+  }
+  etat.ecran = null;
+  await toutCharger();
+}
+
+async function demarrerActivation() {
+  // Une activation abandonnée laisse un facteur non vérifié : on repart de zéro
+  const { data: existants } = await sb.auth.mfa.listFactors();
+  for (const facteur of existants?.all ?? []) {
+    if (facteur.status !== "verified") await sb.auth.mfa.unenroll({ factorId: facteur.id });
+  }
+  const { data, error } = await sb.auth.mfa.enroll({ factorType: "totp", friendlyName: "Application de codes" });
+  if (error) {
+    console.error(error);
+    afficherMessage("Activation impossible pour le moment");
+    return;
+  }
+  etat.mfa = { factorId: data.id, qr: data.totp.qr_code, secret: data.totp.secret, uri: data.totp.uri };
+  etat.ecran = "activation";
+  etat.erreur = null;
+  rendre();
+}
+
+async function abandonnerActivation() {
+  if (etat.mfa) await sb.auth.mfa.unenroll({ factorId: etat.mfa.factorId });
+  etat.mfa = null;
+  etat.ecran = null;
+  etat.erreur = null;
+  rendre();
+}
+
+function lireCode(formulaire) {
+  return String(new FormData(formulaire).get("code")).replace(/\D/g, "");
 }
 
 // ── Données ────────────────────────────────────────────────────────────────────
@@ -154,6 +209,39 @@ function ecranConnexion() {
     </form>`;
 }
 
+function champCode() {
+  return `
+    <label class="champ"><span>Code à 6 chiffres</span>
+      <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123456" required></label>`;
+}
+
+function ecranCode() {
+  return `
+    <form class="connexion" id="code">
+      <h1>Vérification</h1>
+      <p>Saisis le code affiché dans ton application de codes.</p>
+      ${etat.erreur ? `<p class="erreur">${echapper(etat.erreur)}</p>` : ""}
+      ${champCode()}
+      <button class="bouton" type="submit" ${etat.occupe ? "disabled" : ""}>${etat.occupe ? "Vérification…" : "Valider"}</button>
+      <button class="lien" type="button" data-action="deconnexion">Se déconnecter</button>
+    </form>`;
+}
+
+function ecranActivation() {
+  return `
+    <form class="connexion activation" id="activation">
+      <h1>Double authentification</h1>
+      <p>Ajoute ce compte dans une application de codes (Mots de passe d'Apple, Google Authenticator, 1Password…), puis saisis le code qu'elle affiche.</p>
+      <div class="qr"><img src="${echapper(etat.mfa.qr)}" alt="QR code à scanner avec l'application de codes" width="200" height="200"></div>
+      <p class="note">Sur ce téléphone, sans pouvoir scanner : <a class="lien" href="${echapper(etat.mfa.uri)}">ouvrir dans l'application de codes</a>, ou saisis cette clé à la main.</p>
+      <p class="cle">${echapper(etat.mfa.secret)}</p>
+      ${etat.erreur ? `<p class="erreur">${echapper(etat.erreur)}</p>` : ""}
+      ${champCode()}
+      <button class="bouton" type="submit" ${etat.occupe ? "disabled" : ""}>${etat.occupe ? "Vérification…" : "Activer"}</button>
+      <button class="lien" type="button" data-action="abandonner-2fa">Plus tard</button>
+    </form>`;
+}
+
 function entete() {
   const i = etat.listeMois.indexOf(etat.mois);
   return `
@@ -179,6 +267,7 @@ function ecranSynthese() {
       <div class="chiffre"><div class="nom">Dépenses</div><div class="valeur">${eurosRonds.format(t.sorties)}</div></div>
       <div class="chiffre"><div class="nom">Solde</div><div class="valeur ${t.solde >= 0 ? "positif" : "negatif"}">${t.solde >= 0 ? "+" : ""}${eurosRonds.format(t.solde)}</div></div>
     </div>
+    ${etat.doubleAuthActive ? "" : `<button class="bandeau securite" data-action="activer-2fa"><span>Active la double authentification</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>`}
     ${nb ? `<button class="bandeau" data-action="onglet" data-onglet="a-classer"><span>${nb} opération${nb > 1 ? "s" : ""} à classer</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>` : ""}
     <h2 class="titre-section">Dépenses par catégorie</h2>
     ${categories.length ? `<div class="carte">${categories.map(([nom, montant]) => `
@@ -272,6 +361,8 @@ function barreOnglets() {
 
 function rendre() {
   if (!etat.session) { racine.innerHTML = ecranConnexion(); return; }
+  if (etat.ecran === "code") { racine.innerHTML = ecranCode(); return; }
+  if (etat.ecran === "activation") { racine.innerHTML = ecranActivation(); return; }
 
   // Conserver la saisie en cours dans la recherche lors d'un nouveau rendu
   const rechercheActive = document.activeElement?.id === "recherche";
@@ -343,6 +434,12 @@ racine.addEventListener("click", async (evenement) => {
       await enregistrer("annuler_ajustement", { p_transaction_id: id }, "Ajustement annulé");
       break;
     }
+    case "activer-2fa":
+      await demarrerActivation();
+      break;
+    case "abandonner-2fa":
+      await abandonnerActivation();
+      break;
     case "deconnexion":
       await sb.auth.signOut();
       break;
@@ -372,6 +469,35 @@ racine.addEventListener("submit", async (evenement) => {
     return;
   }
 
+  if (formulaire.id === "code" || formulaire.id === "activation") {
+    const code = lireCode(formulaire);
+    if (code.length !== 6) {
+      etat.erreur = "Le code comporte 6 chiffres.";
+      rendre();
+      return;
+    }
+    let factorId = etat.mfa?.factorId;
+    if (formulaire.id === "code") {
+      const { data } = await sb.auth.mfa.listFactors();
+      factorId = data?.totp?.[0]?.id;
+    }
+    etat.occupe = true;
+    const { error } = factorId
+      ? await sb.auth.mfa.challengeAndVerify({ factorId, code })
+      : { error: new Error("Aucun facteur") };
+    etat.occupe = false;
+    if (error) {
+      etat.erreur = "Code incorrect ou expiré. Réessaie avec le code suivant.";
+      rendre();
+      return;
+    }
+    const activation = formulaire.id === "activation";
+    etat.mfa = null;
+    await apresConnexion();
+    if (activation) afficherMessage("Double authentification activée");
+    return;
+  }
+
   if (formulaire.id === "ajustement") {
     const saisie = String(new FormData(formulaire).get("montant")).trim().replace(/\s/g, "").replace(",", ".");
     const montant = Number(saisie);
@@ -392,9 +518,9 @@ sb.auth.onAuthStateChange((evenement, session) => {
   if (session && !etaitConnecte) {
     racine.innerHTML = '<p class="chargement">Chargement…</p>';
     // Hors du rappel d'authentification, pour ne pas bloquer le client Supabase
-    setTimeout(toutCharger, 0);
+    setTimeout(apresConnexion, 0);
   } else if (!session) {
-    Object.assign(etat, { operations: [], listeMois: [], mois: null, fiche: null, onglet: "synthese" });
+    Object.assign(etat, { operations: [], listeMois: [], mois: null, fiche: null, onglet: "synthese", ecran: null, mfa: null, doubleAuthActive: false });
     rendre();
   }
 });
