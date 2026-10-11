@@ -6,6 +6,7 @@ const sb = supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseKey);
 const racine = document.getElementById("app");
 
 const A_CLASSER = "Autres / Divers";
+const MOIS_COURTS = ["jan", "fév", "mar", "avr", "mai", "jun", "jul", "aoû", "sep", "oct", "nov", "déc"];
 const MOIS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
 
 const etat = {
@@ -13,7 +14,12 @@ const etat = {
   ecran: null,             // null (application) | "code" | "activation"
   doubleAuthActive: false,
   mfa: null,               // activation en cours : { factorId, qr, secret, uri }
-  onglet: "synthese",      // synthese | operations | a-classer
+  onglet: "synthese",      // synthese | evolution | operations | a-classer
+  flux: new Map(),         // mois → { entrees, depenses, solde }
+  depensesMensuelles: [],  // { mois, categorie, montant } sur la fenêtre affichée
+  finFenetre: null,        // dernier mois de la fenêtre de 12 mois de l'écran Évolution
+  cleEvolution: null,      // fenêtre déjà chargée (évite de recharger pour rien)
+  categorieEvolution: null,
   listeMois: [],           // "2026-09-01", du plus ancien au plus récent
   mois: null,
   operations: [],          // opérations du mois affiché
@@ -46,6 +52,7 @@ function jourMois(date) {
 
 const ICONES = {
   synthese: '<svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
+  evolution: '<svg viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 6-8M3 21h18"/></svg>',
   operations: '<svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
   "a-classer": '<svg viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8L3 12z"/><circle cx="7.5" cy="8.5" r="1.2"/></svg>',
   precedent: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
@@ -116,13 +123,14 @@ function lireCode(formulaire) {
 // ── Données ────────────────────────────────────────────────────────────────────
 async function chargerReferences() {
   const [flux, categories] = await Promise.all([
-    sb.from("flux_mensuels").select("mois").order("mois"),
+    sb.from("flux_mensuels").select("mois, entrees, depenses, solde").order("mois"),
     sb.from("categories").select("categorie").order("categorie"),
   ]);
   if (flux.error) throw flux.error;
   if (categories.error) throw categories.error;
 
   etat.listeMois = flux.data.map((l) => l.mois);
+  etat.flux = new Map(flux.data.map((l) => [l.mois, { entrees: Number(l.entrees), depenses: Number(l.depenses), solde: Number(l.solde) }]));
   etat.categories = categories.data.map((l) => l.categorie);
   if (!etat.mois || !etat.listeMois.includes(etat.mois)) {
     etat.mois = etat.listeMois[etat.listeMois.length - 1] ?? null;
@@ -139,6 +147,37 @@ async function chargerMois() {
     .order("transaction_id", { ascending: false });
   if (error) throw error;
   etat.operations = data;
+}
+
+// Les 12 mois affichés dans Évolution. La fenêtre ne glisse que si le mois choisi en sort.
+function fenetre12() {
+  const dernier = etat.listeMois.length - 1;
+  const i = etat.listeMois.indexOf(etat.mois);
+  let fin = etat.listeMois.indexOf(etat.finFenetre);
+  if (fin < 0) fin = dernier;
+  if (i > fin) fin = i;
+  if (i < fin - 11) fin = Math.min(dernier, i + 11);
+  etat.finFenetre = etat.listeMois[fin];
+  return etat.listeMois.slice(Math.max(0, fin - 11), fin + 1);
+}
+
+// Charge les totaux mensuels et les dépenses par catégorie de la fenêtre, si nécessaire
+async function chargerEvolution(forcer = false) {
+  const mois = fenetre12();
+  if (!mois.length) return;
+  const cle = `${mois[0]}|${mois[mois.length - 1]}`;
+  if (!forcer && cle === etat.cleEvolution) return;
+
+  const [flux, depenses] = await Promise.all([
+    sb.from("flux_mensuels").select("mois, entrees, depenses, solde").order("mois"),
+    sb.from("depenses_mensuelles").select("mois, categorie, montant").gte("mois", mois[0]).lte("mois", mois[mois.length - 1]),
+  ]);
+  if (flux.error) throw flux.error;
+  if (depenses.error) throw depenses.error;
+
+  etat.flux = new Map(flux.data.map((l) => [l.mois, { entrees: Number(l.entrees), depenses: Number(l.depenses), solde: Number(l.solde) }]));
+  etat.depensesMensuelles = depenses.data.map((l) => ({ ...l, montant: Number(l.montant) }));
+  etat.cleEvolution = cle;
 }
 
 async function toutCharger() {
@@ -158,7 +197,17 @@ async function changerMois(decalage) {
   if (i < 0 || i >= etat.listeMois.length) return;
   etat.mois = etat.listeMois[i];
   etat.filtreCategorie = null;
-  try { await chargerMois(); } catch (e) { etat.erreur = "Impossible de charger ce mois."; console.error(e); }
+  await afficherMois();
+}
+
+async function afficherMois() {
+  try {
+    await chargerMois();
+    if (etat.onglet === "evolution") await chargerEvolution();
+  } catch (e) {
+    etat.erreur = "Impossible de charger ce mois.";
+    console.error(e);
+  }
   rendre();
 }
 
@@ -174,6 +223,7 @@ async function enregistrer(fonction, parametres, messageOk) {
     return;
   }
   await chargerMois();
+  etat.cleEvolution = null;   // les totaux mensuels ont changé : à recharger à la prochaine visite d'Évolution
   afficherMessage(messageOk);
 }
 
@@ -276,6 +326,67 @@ function ecranSynthese() {
       </button>`).join("")}</div>` : `<p class="vide">Aucune dépense ce mois-ci.</p>`}`;
 }
 
+function colonnes(mois, valeurs, max, etiquette) {
+  return mois.map((m, i) => {
+    const [annee, numero] = m.split("-");
+    const barres = valeurs(i).map(([classe, v]) => `<div class="barre ${classe}" style="height:${v > 0 ? Math.max(2, Math.round((v / max) * 130)) : 0}px"></div>`).join("");
+    return `
+      <button class="colonne ${m === etat.mois ? "choisie" : ""}" data-action="choisir-mois" data-mois="${m}" aria-label="${echapper(`${libelleMois(m)} : ${etiquette(i)}`)}">
+        <div class="barres">${barres}</div>
+        <span>${MOIS_COURTS[Number(numero) - 1]}</span>
+        <span class="annee">${numero === "01" || i === 0 ? annee : "&nbsp;"}</span>
+      </button>`;
+  }).join("");
+}
+
+function ecranEvolution() {
+  const mois = fenetre12();
+  if (etat.cleEvolution === null) return `<p class="chargement">Chargement…</p>`;
+
+  const flux = mois.map((m) => etat.flux.get(m) ?? { entrees: 0, depenses: 0, solde: 0 });
+  const maxFlux = Math.max(1, ...flux.flatMap((f) => [f.entrees, f.depenses]));
+  const n = mois.length;
+  const total = (cle) => flux.reduce((s, f) => s + f[cle], 0);
+  const soldeCumule = total("solde");
+
+  // Catégories de la fenêtre, de la plus lourde à la plus légère
+  const parCat = new Map();
+  for (const l of etat.depensesMensuelles) parCat.set(l.categorie, (parCat.get(l.categorie) ?? 0) + l.montant);
+  const categories = [...parCat.entries()].sort((a, b) => b[1] - a[1]).map(([nom]) => nom);
+  if (!categories.includes(etat.categorieEvolution)) etat.categorieEvolution = categories[0] ?? null;
+  const cat = etat.categorieEvolution;
+  const serie = mois.map((m) => etat.depensesMensuelles.find((l) => l.mois === m && l.categorie === cat)?.montant ?? 0);
+  const maxCat = Math.max(1, ...serie);
+  const moyenneCat = serie.reduce((s, v) => s + v, 0) / n;
+  const moisChoisi = mois.indexOf(etat.mois);
+
+  return `
+    <h2 class="titre-section">Entrées et dépenses sur ${n} mois</h2>
+    <div class="carte">
+      <div class="graphe">${colonnes(mois, (i) => [["entree", flux[i].entrees], ["depense", flux[i].depenses]], maxFlux, (i) => `entrées ${eurosRonds.format(flux[i].entrees)}, dépenses ${eurosRonds.format(flux[i].depenses)}`)}</div>
+      <div class="legende"><span><i class="point entree"></i>Entrées</span><span><i class="point depense"></i>Dépenses</span></div>
+    </div>
+    <div class="chiffres sous-graphe">
+      <div class="chiffre"><div class="nom">Entrées moy.</div><div class="valeur">${eurosRonds.format(total("entrees") / n)}</div></div>
+      <div class="chiffre"><div class="nom">Dépenses moy.</div><div class="valeur">${eurosRonds.format(total("depenses") / n)}</div></div>
+      <div class="chiffre"><div class="nom">Solde cumulé</div><div class="valeur ${soldeCumule >= 0 ? "positif" : "negatif"}">${soldeCumule >= 0 ? "+" : ""}${eurosRonds.format(soldeCumule)}</div></div>
+    </div>
+
+    <h2 class="titre-section">Une catégorie dans le temps</h2>
+    ${cat ? `
+    <div class="carte">
+      <select class="choix" id="categorie-evolution" aria-label="Catégorie à suivre">
+        ${categories.map((c) => `<option value="${echapper(c)}" ${c === cat ? "selected" : ""}>${echapper(c)}</option>`).join("")}
+      </select>
+      <div class="graphe simple">${colonnes(mois, (i) => [[cat === A_CLASSER ? "a-classer" : "depense", serie[i]]], maxCat, (i) => eurosRonds.format(serie[i]))}</div>
+      <div class="resume">
+        <span>${libelleMois(etat.mois)} : <strong>${eurosRonds.format(serie[moisChoisi] ?? 0)}</strong></span>
+        <span>Moyenne : ${eurosRonds.format(moyenneCat)} / mois</span>
+      </div>
+      <button class="bouton secondaire" data-action="filtrer" data-categorie="${echapper(cat)}">Voir les opérations de ${libelleMois(etat.mois).toLowerCase()}</button>
+    </div>` : `<p class="vide">Aucune dépense sur la période.</p>`}`;
+}
+
 function ligneOperation(o) {
   const signe = o.type_flux === "entree" ? "+" : o.type_flux === "depense" ? "-" : "";
   let etiquette = "";
@@ -355,7 +466,7 @@ function barreOnglets() {
     <button class="onglet ${etat.onglet === id ? "actif" : ""}" data-action="onglet" data-onglet="${id}">
       ${ICONES[id]}<span>${nom}</span>${id === "a-classer" && nb ? `<span class="pastille">${nb}</span>` : ""}
     </button>`;
-  return `<nav class="onglets"><div class="interieur">${onglet("synthese", "Synthèse")}${onglet("operations", "Opérations")}${onglet("a-classer", "À classer")}</div></nav>`;
+  return `<nav class="onglets"><div class="interieur">${onglet("synthese", "Synthèse")}${onglet("evolution", "Évolution")}${onglet("operations", "Opérations")}${onglet("a-classer", "À classer")}</div></nav>`;
 }
 
 function rendre() {
@@ -366,7 +477,7 @@ function rendre() {
   // Conserver la saisie en cours dans la recherche lors d'un nouveau rendu
   const rechercheActive = document.activeElement?.id === "recherche";
 
-  const corps = { synthese: ecranSynthese, operations: ecranOperations, "a-classer": ecranAClasser }[etat.onglet]();
+  const corps = { synthese: ecranSynthese, evolution: ecranEvolution, operations: ecranOperations, "a-classer": ecranAClasser }[etat.onglet]();
   racine.innerHTML = `
     ${entete()}
     ${etat.erreur ? `<p class="erreur">${echapper(etat.erreur)}</p>` : ""}
@@ -395,6 +506,16 @@ racine.addEventListener("click", async (evenement) => {
       if (etat.onglet !== "operations") etat.filtreCategorie = null;
       window.scrollTo(0, 0);
       rendre();
+      if (etat.onglet === "evolution") {
+        try { await chargerEvolution(); } catch (e) { etat.erreur = "Impossible de charger l'évolution."; console.error(e); }
+        rendre();
+      }
+      break;
+    case "choisir-mois":
+      if (cible.dataset.mois !== etat.mois) {
+        etat.mois = cible.dataset.mois;
+        await afficherMois();
+      }
       break;
     case "mois":
       await changerMois(Number(cible.dataset.decalage));
@@ -448,6 +569,12 @@ racine.addEventListener("click", async (evenement) => {
 racine.addEventListener("input", (evenement) => {
   if (evenement.target.id !== "recherche") return;
   etat.recherche = evenement.target.value;
+  rendre();
+});
+
+racine.addEventListener("change", (evenement) => {
+  if (evenement.target.id !== "categorie-evolution") return;
+  etat.categorieEvolution = evenement.target.value;
   rendre();
 });
 
@@ -519,7 +646,7 @@ sb.auth.onAuthStateChange((evenement, session) => {
     // Hors du rappel d'authentification, pour ne pas bloquer le client Supabase
     setTimeout(apresConnexion, 0);
   } else if (!session) {
-    Object.assign(etat, { operations: [], listeMois: [], mois: null, fiche: null, onglet: "synthese", ecran: null, mfa: null, doubleAuthActive: false });
+    Object.assign(etat, { operations: [], listeMois: [], mois: null, fiche: null, onglet: "synthese", ecran: null, mfa: null, doubleAuthActive: false, flux: new Map(), depensesMensuelles: [], finFenetre: null, cleEvolution: null });
     rendre();
   }
 });

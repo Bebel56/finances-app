@@ -9,6 +9,7 @@
   --accent: #4f46b8;
   --accent-fond: #eceafd;
   --barre: #7f77dd;
+  --entree: #1d9e75;
   --alerte: #8a5a0a;
   --alerte-fond: #fbeed6;
   --alerte-barre: #ef9f27;
@@ -29,6 +30,7 @@
     --accent: #aaa3f2;
     --accent-fond: #2c2a4d;
     --barre: #8f88e6;
+    --entree: #5dcaa5;
     --alerte: #f3c471;
     --alerte-fond: #40300f;
     --alerte-barre: #ef9f27;
@@ -237,3 +239,30 @@ button { cursor: pointer; }
   overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; color: var(--texte) !important;
 }
 .bandeau.securite { background: var(--accent-fond); color: var(--accent); margin-bottom: 8px; }
+
+/* ── Évolution ─────────────────────────────────────────── */
+.graphe { display: flex; align-items: flex-end; gap: 2px; }
+.colonne {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 6px 0 4px; border: none; border-radius: 8px; background: none;
+  font-size: 11px; color: var(--texte-3);
+}
+.colonne.choisie { background: var(--creux); color: var(--texte); font-weight: 600; }
+.colonne .annee { font-size: 11px; font-weight: 400; color: var(--texte-3); }
+.barres { height: 132px; display: flex; align-items: flex-end; justify-content: center; gap: 2px; width: 100%; }
+.barre { width: 38%; max-width: 12px; border-radius: 3px 3px 0 0; background: var(--barre); }
+.barre.entree { background: var(--entree); }
+.barre.a-classer { background: var(--alerte-barre); }
+.graphe.simple .barre { width: 60%; max-width: 18px; }
+.legende { display: flex; gap: 16px; justify-content: center; font-size: 12px; color: var(--texte-2); margin-top: 8px; }
+.point { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 6px; background: var(--barre); }
+.point.entree { background: var(--entree); }
+.chiffres.sous-graphe { margin: 8px 0 20px; }
+.choix {
+  width: 100%; height: 44px; padding: 0 12px; margin-bottom: 8px;
+  border: 1px solid var(--trait); border-radius: var(--rayon);
+  background: var(--fond); color: var(--texte); font: inherit;
+}
+.resume { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 14px; color: var(--texte-2); margin: 10px 0 12px; }
+.resume strong { color: var(--texte); font-weight: 600; }
