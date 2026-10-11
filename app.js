@@ -6,10 +6,18 @@ const sb = supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseKey);
 const racine = document.getElementById("app");
 
 const A_CLASSER = "Autres / Divers";
+const MOIS_ABREGES = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
 const MOIS_COURTS = ["jan", "fév", "mar", "avr", "mai", "jun", "jul", "aoû", "sep", "oct", "nov", "déc"];
 const MOIS = ["Janvier", "Février", "Mars", "Avril", "Mai", "Juin", "Juillet", "Août", "Septembre", "Octobre", "Novembre", "Décembre"];
 
+const NATURES = { salaire: "Salaire", dividendes: "Dividendes", remboursement: "Remboursement", autre: "Autre" };
+
+function lireMode() {
+  try { return localStorage.getItem("mode") === "paie" ? "paie" : "mois"; } catch { return "mois"; }
+}
+
 const etat = {
+  mode: lireMode(),        // "mois" (calendrier) | "paie" (de salaire à salaire)
   session: null,
   ecran: null,             // null (application) | "code" | "activation"
   doubleAuthActive: false,
@@ -44,6 +52,14 @@ function libelleMois(mois) {
   const [annee, m] = mois.split("-");
   return `${MOIS[Number(m) - 1]} ${annee}`;
 }
+
+function jourEnLettres(date) {
+  const [, m, j] = date.split("-");
+  return `${Number(j)} ${MOIS_ABREGES[Number(m) - 1]}`;
+}
+
+// En mode « paie », les données sont rangées par période et non par mois du calendrier
+const cle = () => (etat.mode === "paie" ? "periode" : "mois");
 
 function jourMois(date) {
   const [, m, j] = date.split("-");
@@ -121,16 +137,24 @@ function lireCode(formulaire) {
 }
 
 // ── Données ────────────────────────────────────────────────────────────────────
+// Totaux par mois ou par période de paie, selon le mode
+async function chargerFlux() {
+  const requete = etat.mode === "paie"
+    ? sb.from("flux_periodes").select("periode, est_periode_de_paie, debut, fin, en_cours, nb_jours, entrees, depenses, solde").order("periode")
+    : sb.from("flux_mensuels").select("mois, entrees, depenses, solde").order("mois");
+  const { data, error } = await requete;
+  if (error) throw error;
+  etat.flux = new Map(data.map((l) => [l[cle()], { ...l, entrees: Number(l.entrees), depenses: Number(l.depenses), solde: Number(l.solde) }]));
+  etat.listeMois = data.map((l) => l[cle()]);
+}
+
 async function chargerReferences() {
-  const [flux, categories] = await Promise.all([
-    sb.from("flux_mensuels").select("mois, entrees, depenses, solde").order("mois"),
+  const [, categories] = await Promise.all([
+    chargerFlux(),
     sb.from("categories").select("categorie").order("categorie"),
   ]);
-  if (flux.error) throw flux.error;
   if (categories.error) throw categories.error;
 
-  etat.listeMois = flux.data.map((l) => l.mois);
-  etat.flux = new Map(flux.data.map((l) => [l.mois, { entrees: Number(l.entrees), depenses: Number(l.depenses), solde: Number(l.solde) }]));
   etat.categories = categories.data.map((l) => l.categorie);
   if (!etat.mois || !etat.listeMois.includes(etat.mois)) {
     etat.mois = etat.listeMois[etat.listeMois.length - 1] ?? null;
@@ -142,7 +166,7 @@ async function chargerMois() {
   const { data, error } = await sb
     .from("transactions")
     .select("*")
-    .eq("mois", etat.mois)
+    .eq(cle(), etat.mois)
     .order("date_operation", { ascending: false })
     .order("transaction_id", { ascending: false });
   if (error) throw error;
@@ -165,19 +189,18 @@ function fenetre12() {
 async function chargerEvolution(forcer = false) {
   const mois = fenetre12();
   if (!mois.length) return;
-  const cle = `${mois[0]}|${mois[mois.length - 1]}`;
-  if (!forcer && cle === etat.cleEvolution) return;
+  const cleFenetre = `${etat.mode}|${mois[0]}|${mois[mois.length - 1]}`;
+  if (!forcer && cleFenetre === etat.cleEvolution) return;
 
-  const [flux, depenses] = await Promise.all([
-    sb.from("flux_mensuels").select("mois, entrees, depenses, solde").order("mois"),
-    sb.from("depenses_mensuelles").select("mois, categorie, montant").gte("mois", mois[0]).lte("mois", mois[mois.length - 1]),
+  const vue = etat.mode === "paie" ? "depenses_periodes" : "depenses_mensuelles";
+  const [, depenses] = await Promise.all([
+    chargerFlux(),
+    sb.from(vue).select(`${cle()}, categorie, montant`).gte(cle(), mois[0]).lte(cle(), mois[mois.length - 1]),
   ]);
-  if (flux.error) throw flux.error;
   if (depenses.error) throw depenses.error;
 
-  etat.flux = new Map(flux.data.map((l) => [l.mois, { entrees: Number(l.entrees), depenses: Number(l.depenses), solde: Number(l.solde) }]));
-  etat.depensesMensuelles = depenses.data.map((l) => ({ ...l, montant: Number(l.montant) }));
-  etat.cleEvolution = cle;
+  etat.depensesMensuelles = depenses.data.map((l) => ({ mois: l[cle()], categorie: l.categorie, montant: Number(l.montant) }));
+  etat.cleEvolution = cleFenetre;
 }
 
 async function toutCharger() {
@@ -222,14 +245,18 @@ async function enregistrer(fonction, parametres, messageOk) {
     afficherMessage(error.message || "Enregistrement impossible");
     return;
   }
+  // Qualifier un salaire peut créer ou supprimer une période : on recharge aussi la liste
+  await chargerFlux();
+  if (!etat.listeMois.includes(etat.mois)) etat.mois = etat.listeMois[etat.listeMois.length - 1] ?? null;
   await chargerMois();
-  etat.cleEvolution = null;   // les totaux mensuels ont changé : à recharger à la prochaine visite d'Évolution
+  etat.cleEvolution = null;   // les totaux ont changé : à recharger à la prochaine visite d'Évolution
   afficherMessage(messageOk);
 }
 
 // ── Calculs sur le mois affiché ────────────────────────────────────────────────
 const depenses = () => etat.operations.filter((o) => o.type_flux === "depense");
-const aClasser = () => depenses().filter((o) => o.categorie === A_CLASSER);
+// À traiter : dépenses sans catégorie et entrées dont la nature reste à préciser
+const aClasser = () => etat.operations.filter((o) => (o.type_flux === "depense" && o.categorie === A_CLASSER) || o.a_qualifier);
 
 function totaux() {
   const somme = (type) => etat.operations.filter((o) => o.type_flux === type).reduce((s, o) => s + Number(o.montant), 0);
@@ -302,7 +329,23 @@ function entete() {
         <button class="icone" data-action="mois" data-decalage="1" aria-label="Mois suivant" ${i >= etat.listeMois.length - 1 ? "disabled" : ""}>${ICONES.suivant}</button>
         <button class="icone" data-action="deconnexion" aria-label="Se déconnecter">${ICONES.sortir}</button>
       </div>
-    </header>`;
+    </header>
+    <div class="sous-entete">
+      <div class="bascule" role="group" aria-label="Découpage">
+        <button class="${etat.mode === "mois" ? "actif" : ""}" data-action="mode" data-mode="mois">Par mois</button>
+        <button class="${etat.mode === "paie" ? "actif" : ""}" data-action="mode" data-mode="paie">Par paie</button>
+      </div>
+      <span class="dates">${echapper(datesPeriode())}</span>
+    </div>`;
+}
+
+// « 28 août → 28 sept. · 32 jours » pour une période de paie
+function datesPeriode() {
+  const p = etat.flux.get(etat.mois);
+  if (etat.mode !== "paie" || !p?.est_periode_de_paie) return "";
+  return p.en_cours
+    ? `Depuis le ${jourEnLettres(p.debut)} · ${p.nb_jours} jours`
+    : `${jourEnLettres(p.debut)} → ${jourEnLettres(p.fin)} · ${p.nb_jours} jours`;
 }
 
 function ecranSynthese() {
@@ -310,6 +353,9 @@ function ecranSynthese() {
   const categories = parCategorie();
   const max = categories.length ? categories[0][1] : 0;
   const nb = aClasser().length;
+  const periode = etat.flux.get(etat.mois);
+  const parJour = etat.mode === "paie" && periode?.est_periode_de_paie && periode.nb_jours > 0
+    ? `<p class="par-jour">Dépense moyenne : ${eurosRonds.format(t.sorties / periode.nb_jours)} par jour</p>` : "";
 
   return `
     <div class="chiffres">
@@ -317,6 +363,7 @@ function ecranSynthese() {
       <div class="chiffre"><div class="nom">Dépenses</div><div class="valeur">${eurosRonds.format(t.sorties)}</div></div>
       <div class="chiffre"><div class="nom">Solde</div><div class="valeur ${t.solde >= 0 ? "positif" : "negatif"}">${t.solde >= 0 ? "+" : ""}${eurosRonds.format(t.solde)}</div></div>
     </div>
+    ${parJour}
     ${nb ? `<button class="bandeau" data-action="onglet" data-onglet="a-classer"><span>${nb} opération${nb > 1 ? "s" : ""} à classer</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>` : ""}
     <h2 class="titre-section">Dépenses par catégorie</h2>
     ${categories.length ? `<div class="carte">${categories.map(([nom, montant]) => `
@@ -394,6 +441,10 @@ function ligneOperation(o) {
     etiquette = `<span class="etiquette ${o.categorie === A_CLASSER ? "a-classer" : ""}">${echapper(o.categorie === A_CLASSER ? "À classer" : o.categorie)}</span>`;
   } else if (o.type_flux === "virement_interne") {
     etiquette = `<span class="etiquette">Virement interne</span>`;
+  } else if (o.a_qualifier) {
+    etiquette = `<span class="etiquette a-classer">À qualifier</span>`;
+  } else if (o.nature_entree) {
+    etiquette = `<span class="etiquette">${echapper(NATURES[o.nature_entree] ?? o.nature_entree)}</span>`;
   }
   return `
     <button class="operation" data-action="ouvrir" data-id="${o.transaction_id}">
@@ -418,7 +469,8 @@ function ecranOperations() {
 }
 
 function ecranAClasser() {
-  const liste = aClasser().sort((a, b) => Number(b.montant) - Number(a.montant));
+  // Les entrées à qualifier d'abord, puis les dépenses de la plus grosse à la plus petite
+  const liste = aClasser().sort((a, b) => (b.a_qualifier ? 1 : 0) - (a.a_qualifier ? 1 : 0) || Number(b.montant) - Number(a.montant));
   return liste.length
     ? `<div class="operations">${liste.map(ligneOperation).join("")}</div>`
     : `<p class="vide">Tout est classé pour ${libelleMois(etat.mois).toLowerCase()}.</p>`;
@@ -437,7 +489,7 @@ function ficheOperation() {
           <h2>${echapper(o.libelle)}</h2>
           <button class="icone" data-action="fermer" aria-label="Fermer">${ICONES.fermer}</button>
         </div>
-        <p class="sous">${type} du ${jourMois(o.date_operation)}${o.date_effective !== o.date_operation ? ` · comptée en ${libelleMois(o.mois).toLowerCase()}` : ""}</p>
+        <p class="sous">${type} du ${jourMois(o.date_operation)}${o.date_effective !== o.date_operation ? ` · comptée en ${libelleMois(o[cle()]).toLowerCase()}` : ""}</p>
         <p class="gros">${euros.format(o.montant)}</p>
         ${o.est_ajustee ? `<p class="note">Montant d'origine : ${euros.format(o.montant_original)}</p>` : ""}
 
@@ -455,7 +507,14 @@ function ficheOperation() {
           </form>
           <p class="note">Pour une dépense partagée ou remboursée en partie. Le montant d'origine est conservé.</p>
           ${o.est_ajustee ? `<button class="lien" data-action="annuler-ajustement">Annuler l'ajustement</button>` : ""}
-        ` : `<p class="note">${o.type_flux === "virement_interne" ? "Virement entre tes comptes : il ne compte ni dans les entrées ni dans les dépenses." : "Les entrées ne se classent pas."}</p>`}
+        ` : o.type_flux === "entree" ? `
+          <h3>Nature de cette entrée</h3>
+          <div class="categories">${Object.entries(NATURES).map(([valeur, nom]) => `
+            <button class="categorie ${valeur === o.nature_entree ? "choisie" : ""}" data-action="qualifier" data-nature="${valeur}">${nom}</button>`).join("")}
+          </div>
+          <p class="note">Un salaire ouvre une nouvelle période de paie. Dividendes, remboursements et autres entrées sont comptés dans la période en cours, sans la couper.</p>
+          ${o.nature_entree ? `<button class="lien" data-action="annuler-qualification">Retirer la nature</button>` : ""}
+        ` : `<p class="note">Virement entre tes comptes : il ne compte ni dans les entrées ni dans les dépenses.</p>`}
       </section>
     </div>`;
 }
@@ -554,6 +613,31 @@ racine.addEventListener("click", async (evenement) => {
       await enregistrer("annuler_ajustement", { p_transaction_id: id }, "Ajustement annulé");
       break;
     }
+    case "qualifier": {
+      const nature = cible.dataset.nature;
+      const id = etat.fiche;
+      etat.fiche = null;
+      await enregistrer("qualifier_entree", { p_transaction_id: id, p_nature: nature }, `Entrée marquée : ${NATURES[nature].toLowerCase()}`);
+      break;
+    }
+    case "annuler-qualification": {
+      const id = etat.fiche;
+      etat.fiche = null;
+      await enregistrer("annuler_qualification", { p_transaction_id: id }, "Nature retirée");
+      break;
+    }
+    case "mode":
+      if (cible.dataset.mode !== etat.mode) {
+        etat.mode = cible.dataset.mode;
+        try { localStorage.setItem("mode", etat.mode); } catch { /* stockage indisponible : le choix vaut pour cette session */ }
+        Object.assign(etat, { filtreCategorie: null, cleEvolution: null, finFenetre: null, fiche: null });
+        await toutCharger();
+        if (etat.onglet === "evolution") {
+          try { await chargerEvolution(); } catch (e) { etat.erreur = "Impossible de charger l'évolution."; console.error(e); }
+          rendre();
+        }
+      }
+      break;
     case "activer-2fa":
       await demarrerActivation();
       break;
