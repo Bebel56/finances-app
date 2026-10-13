@@ -302,3 +302,15 @@ div.ligne-hors.fixe, div.ligne-compte.fixe { cursor: default; }
 
 .bandeau.info { background: var(--accent-fond); color: var(--accent); font-weight: 400; font-size: 14px; gap: 10px; }
 .bandeau.info svg { flex: none; }
+
+/* ── À venir ───────────────────────────────────────────── */
+.ligne-venir {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 0 0 12px; border: none; background: none; text-align: left;
+}
+.ligne-venir > span:first-child { min-width: 0; }
+.ligne-venir .nom { display: block; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ligne-venir .detail { display: block; font-size: 12px; color: var(--texte-3); margin-top: 2px; }
+.ligne-venir .montant { font-size: 15px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fois { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.fois .categorie { text-align: center; }

@@ -46,6 +46,8 @@ const etat = {
   categories: [],
   comptesCourants: [],     // { societe, apports, remboursements, solde }
   emprunts: null,          // { emprunte, rembourse, reste_du, nb_mouvements }
+  aVenir: [],              // paiements attendus : { source, cle, transaction_id, libelle, date_prevue, montant, detail }
+  ficheAVenir: null,       // index du paiement à venir ouvert
   salairePrecedent: null,  // vue par mois : salaire versé fin du mois d'avant { date_operation, montant }
   societe: null,           // société dont on consulte les mouvements (toutes dates)
   mouvementsSociete: [],
@@ -75,6 +77,29 @@ function jourEnLettres(date) {
   const [, m, j] = date.split("-");
   return `${Number(j)} ${MOIS_ABREGES[Number(m) - 1]}`;
 }
+
+function dateIso(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const aujourdhui = () => dateIso(new Date());
+
+function ajouterJours(date, jours) {
+  const [a, m, j] = date.split("-").map(Number);
+  return dateIso(new Date(a, m - 1, j + jours));
+}
+
+// Même jour le mois suivant, moins un jour : la veille du prochain salaire attendu
+function veilleMoisSuivant(date) {
+  const [a, m, j] = date.split("-").map(Number);
+  return dateIso(new Date(a, m, j - 1));
+}
+
+function finDeMois(mois) {
+  const [a, m] = mois.split("-").map(Number);
+  return dateIso(new Date(a, m, 0));
+}
+
+const libelleCourt = (libelle) => libelle.replace(/^CARTE \d{2}\/\d{2} /, "");
 
 // En mode « paie », les données sont rangées par période et non par mois du calendrier
 const cle = () => (etat.mode === "paie" ? "periode" : "mois");
@@ -170,6 +195,9 @@ async function chargerComptesCourants() {
   const { data, error } = await sb.from("comptes_courants").select("societe, apports, remboursements, net, solde, historique_depuis").order("societe");
   if (error) throw error;
   etat.comptesCourants = data;
+  const aVenir = await sb.from("a_venir").select("*").order("date_prevue");
+  if (aVenir.error) throw aVenir.error;
+  etat.aVenir = aVenir.data;
   const emprunts = await sb.from("emprunts").select("emprunte, rembourse, reste_du, nb_mouvements").maybeSingle();
   if (emprunts.error) throw emprunts.error;
   etat.emprunts = emprunts.data;
@@ -418,7 +446,8 @@ function ecranSynthese() {
     ${parJour}
     ${etat.salairePrecedent ? `<button class="bandeau info" data-action="mode" data-mode="paie"><span>Ton salaire de ${eurosRonds.format(etat.salairePrecedent.montant)} a été versé le ${jourEnLettres(etat.salairePrecedent.date_operation)} : il compte dans le mois précédent. Voir de salaire à salaire</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>` : ""}
     ${nb ? `<button class="bandeau" data-action="onglet" data-onglet="a-classer"><span>${nb} opération${nb > 1 ? "s" : ""} à classer</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>` : ""}
-    <h2 class="titre-section">Dépenses par catégorie</h2>
+    ${carteAVenir()}
+    <h2 class="titre-section ${paiementsAVenir().length ? "espace" : ""}">Dépenses par catégorie</h2>
     ${categories.length ? `<div class="carte">${categories.map(([nom, montant]) => `
       <button class="ligne-cat" data-action="filtrer" data-categorie="${echapper(nom)}">
         <div class="haut"><span>${echapper(nom)}</span><span>${eurosRonds.format(montant)}</span></div>
@@ -509,6 +538,69 @@ function ecranEvolution() {
       </div>
       <button class="bouton secondaire" data-action="filtrer" data-categorie="${echapper(cat)}">Voir les opérations de ${libelleMois(etat.mois).toLowerCase()}</button>
     </div>` : `<p class="vide">Aucune dépense sur la période.</p>`}`;
+}
+
+// Dernier jour de la période affichée si elle est en cours, sinon null (pas de prévision sur le passé)
+function horizonPrevisions() {
+  const jour = aujourdhui();
+  const p = etat.flux.get(etat.mois);
+  if (etat.mode === "paie" && p?.est_periode_de_paie) {
+    if (!p.en_cours) return null;
+    const fin = veilleMoisSuivant(p.debut);
+    // Salaire en retard par rapport au mois dernier : on regarde une semaine devant
+    return fin >= jour ? fin : ajouterJours(jour, 7);
+  }
+  return etat.mois === `${jour.slice(0, 7)}-01` ? finDeMois(etat.mois) : null;
+}
+
+const paiementsAVenir = () => {
+  const horizon = horizonPrevisions();
+  return horizon ? etat.aVenir.filter((a) => a.date_prevue <= horizon) : [];
+};
+
+// Paiements attendus d'ici la fin de la période, et solde une fois qu'ils seront passés
+function carteAVenir() {
+  const horizon = horizonPrevisions();
+  const liste = paiementsAVenir();
+  if (!horizon || !liste.length) return "";
+
+  const jour = aujourdhui();
+  const reste = liste.reduce((s, a) => s + Number(a.montant), 0);
+  const resteBudget = liste.filter((a) => a.type_flux === "depense").reduce((s, a) => s + Number(a.montant), 0);
+  const projete = totaux().solde - resteBudget;
+
+  return `
+    <h2 class="titre-section">À venir d'ici le ${jourEnLettres(horizon)}</h2>
+    <div class="carte">${liste.map((a) => `
+      <button class="ligne-venir" data-action="ouvrir-a-venir" data-index="${etat.aVenir.indexOf(a)}">
+        <span><span class="nom">${echapper(libelleCourt(a.libelle))}</span><span class="detail">${a.date_prevue < jour ? "attendu le" : "le"} ${jourEnLettres(a.date_prevue)} · ${a.source === "echeancier" ? `mensualité ${echapper(a.detail)}` : "chaque mois"}</span></span>
+        <span class="montant">-${euros.format(a.montant)}</span>
+      </button>`).join("")}
+      <div class="ligne-hors fixe total"><span>Reste à payer</span><span>-${eurosRonds.format(reste)}</span></div>
+      <div class="ligne-hors fixe"><span>Solde projeté</span><span class="${projete >= 0 ? "positif" : "negatif"}">${projete >= 0 ? "+" : "-"}${eurosRonds.format(Math.abs(projete))}</span></div>
+      <p class="note">Prévision des paiements réguliers et des mensualités déclarées. Les dépenses variables (courses, sorties) n'y sont pas. Une ligne disparaît quand le paiement passe sur le compte.</p>
+    </div>`;
+}
+
+function ficheAVenir() {
+  const a = etat.aVenir[etat.ficheAVenir];
+  if (!a) return "";
+  return `
+    <div class="voile" data-action="fermer">
+      <section class="fiche" role="dialog" aria-modal="true" aria-label="Paiement à venir">
+        <div class="tete">
+          <h2>${echapper(libelleCourt(a.libelle))}</h2>
+          <button class="icone" data-action="fermer" aria-label="Fermer">${ICONES.fermer}</button>
+        </div>
+        <p class="sous">Prévu le ${jourEnLettres(a.date_prevue)} · ${a.source === "echeancier" ? `mensualité ${echapper(a.detail)}` : "paiement régulier, repéré dans ton historique"}</p>
+        <p class="gros">${euros.format(a.montant)}</p>
+        ${a.source === "echeancier"
+          ? `<p class="note">Calculé à partir de la première mensualité. Il disparaîtra quand un paiement du même montant au même commerçant passera sur le compte.</p>
+             <button class="bouton secondaire" data-action="retirer-echeancier">Ce n'est plus un paiement en plusieurs fois</button>`
+          : `<p class="note">Même montant que le mois dernier, un mois plus tard. Si ce paiement s'est arrêté (abonnement résilié, prêt soldé), retire-le des prévisions.</p>
+             <button class="bouton secondaire" data-action="ignorer-recurrent">Ne plus prévoir ce paiement</button>`}
+      </section>
+    </div>`;
 }
 
 // Du solde du budget à ce que le compte a réellement gagné ou perdu, tous mouvements confondus
@@ -632,6 +724,13 @@ function ficheOperation() {
           </form>
           <p class="note">Pour une dépense partagée ou remboursée en partie. Le montant d'origine est conservé.</p>
           ${o.est_ajustee ? `<button class="lien" data-action="annuler-ajustement">Annuler l'ajustement</button>` : ""}
+
+          <h3>Paiement en plusieurs fois</h3>
+          <div class="fois">${[2, 3, 4, 6, 10, 12].map((n) => `
+            <button class="categorie ${o.nb_echeances === n ? "choisie" : ""}" data-action="echeancier" data-nombre="${n}">${n} fois</button>`).join("")}
+          </div>
+          <p class="note">À indiquer sur la première mensualité. Les suivantes sont prévues au même montant, un mois plus tard chacune, dans « À venir ».</p>
+          ${o.nb_echeances ? `<button class="lien" data-action="annuler-echeancier">Ce n'est pas un paiement en plusieurs fois</button>` : ""}
         ` : estQualifiable ? `
           <h3>C'est un revenu</h3>
           <div class="categories">${boutonsNature(NATURES_REVENU)}</div>
@@ -670,6 +769,7 @@ function rendre() {
     ${corps}
     ${barreOnglets()}
     ${etat.fiche !== null ? ficheOperation() : ""}
+    ${etat.ficheAVenir !== null ? ficheAVenir() : ""}
     ${etat.message ? `<div class="message" role="status">${echapper(etat.message)}</div>` : ""}`;
 
   if (rechercheActive) {
@@ -741,8 +841,38 @@ racine.addEventListener("click", async (evenement) => {
       break;
     case "fermer":
       etat.fiche = null;
+      etat.ficheAVenir = null;
       rendre();
       break;
+    case "ouvrir-a-venir":
+      etat.ficheAVenir = Number(cible.dataset.index);
+      rendre();
+      break;
+    case "ignorer-recurrent": {
+      const a = etat.aVenir[etat.ficheAVenir];
+      etat.ficheAVenir = null;
+      await enregistrer("ignorer_recurrent", { p_cle: a.cle }, "Paiement retiré des prévisions");
+      break;
+    }
+    case "retirer-echeancier": {
+      const a = etat.aVenir[etat.ficheAVenir];
+      etat.ficheAVenir = null;
+      await enregistrer("annuler_echeancier", { p_transaction_id: a.transaction_id }, "Paiement en plusieurs fois retiré");
+      break;
+    }
+    case "echeancier": {
+      const nombre = Number(cible.dataset.nombre);
+      const id = etat.fiche;
+      etat.fiche = null;
+      await enregistrer("declarer_echeancier", { p_transaction_id: id, p_nombre: nombre }, `Paiement en ${nombre} fois enregistré`);
+      break;
+    }
+    case "annuler-echeancier": {
+      const id = etat.fiche;
+      etat.fiche = null;
+      await enregistrer("annuler_echeancier", { p_transaction_id: id }, "Paiement en plusieurs fois retiré");
+      break;
+    }
     case "classer": {
       const categorie = cible.dataset.categorie;
       const id = etat.fiche;
