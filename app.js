@@ -443,8 +443,8 @@ function datesPeriode() {
 
 function ecranSynthese() {
   const t = totaux();
-  const categories = parCategorie();
-  const max = categories.length ? categories[0][1] : 0;
+  const categories = etat.masque ? parCategorie().sort((a, b) => a[0].localeCompare(b[0], "fr")) : parCategorie();
+  const max = Math.max(0, ...categories.map(([, montant]) => montant));
   const nb = aClasser().length;
   const periode = etat.flux.get(etat.mois);
   const parJour = etat.mode === "paie" && periode?.est_periode_de_paie && periode.nb_jours > 0
@@ -472,7 +472,7 @@ function ecranSynthese() {
     <div class="carte">${etat.comptesCourants.map((c) => {
       const connu = c.solde !== null;
       const valeur = Number(connu ? c.solde : c.net);
-      const etiquette = connu ? (valeur >= 0 ? "te doit" : "trop perçu") : (valeur >= 0 ? "net apporté" : "net reçu");
+      const etiquette = etat.masque ? "net" : connu ? (valeur >= 0 ? "te doit" : "trop perçu") : (valeur >= 0 ? "net apporté" : "net reçu");
       return `
       <button class="ligne-compte" data-action="societe" data-societe="${echapper(c.societe)}">
         <span><span class="nom">${echapper(c.societe)}</span><span class="detail">${eurosRonds.format(c.apports)} apportés · ${eurosRonds.format(c.remboursements)} remboursés</span></span>
@@ -486,7 +486,7 @@ function ecranSynthese() {
     <div class="carte">
       <div class="ligne-compte fixe">
         <span><span class="nom">Toutes dates confondues</span><span class="detail">${eurosRonds.format(etat.emprunts.emprunte)} empruntés · ${eurosRonds.format(etat.emprunts.rembourse)} remboursés</span></span>
-        <span class="du">${Number(etat.emprunts.reste_du) > 0 ? "reste dû" : Number(etat.emprunts.reste_du) < 0 ? "trop remboursé" : "soldé"} <strong>${eurosRonds.format(Math.abs(etat.emprunts.reste_du))}</strong></span>
+        <span class="du">${etat.masque ? "solde" : Number(etat.emprunts.reste_du) > 0 ? "reste dû" : Number(etat.emprunts.reste_du) < 0 ? "trop remboursé" : "soldé"} <strong>${eurosRonds.format(Math.abs(etat.emprunts.reste_du))}</strong></span>
       </div>
       <p class="note">Hors budget. Un prêt se marque « Emprunt » sur le virement reçu, et chaque mensualité se classe en « Remboursement d'emprunt ».</p>
     </div>` : ""}`;
@@ -518,7 +518,9 @@ function ecranEvolution() {
   // Catégories de la fenêtre, de la plus lourde à la plus légère
   const parCat = new Map();
   for (const l of etat.depensesMensuelles) parCat.set(l.categorie, (parCat.get(l.categorie) ?? 0) + l.montant);
-  const categories = [...parCat.entries()].sort((a, b) => b[1] - a[1]).map(([nom]) => nom);
+  const categories = [...parCat.entries()]
+    .sort((a, b) => (etat.masque ? a[0].localeCompare(b[0], "fr") : b[1] - a[1]))
+    .map(([nom]) => nom);
   if (!categories.includes(etat.categorieEvolution)) etat.categorieEvolution = categories[0] ?? null;
   const cat = etat.categorieEvolution;
   const serie = mois.map((m) => etat.depensesMensuelles.find((l) => l.mois === m && l.categorie === cat)?.montant ?? 0);
@@ -651,7 +653,7 @@ function carteVariation() {
       <button class="ligne-hors" data-action="filtrer-type" data-type="${l.type}" data-sens="${l.sens}" data-nom="${echapper(l.nom)}">
         <span>${echapper(l.nom)}</span><span>${montantSigne(l.sens === "entree" ? l.montant : -l.montant)}</span>
       </button>`).join("")}
-      <div class="ligne-hors fixe total"><span>Ton compte a ${variation >= 0 ? "gagné" : "perdu"}</span><span class="${variation >= 0 ? "positif" : "negatif"}">${montantSigne(variation)}</span></div>
+      <div class="ligne-hors fixe total"><span>${etat.masque ? "Variation du compte" : `Ton compte a ${variation >= 0 ? "gagné" : "perdu"}`}</span><span class="${variation >= 0 ? "positif" : "negatif"}">${montantSigne(variation)}</span></div>
       <p class="note">Le solde du budget dit si tu as dépensé plus que tes revenus. La variation du compte ajoute tout le reste : épargne, emprunts, comptes courants, remboursements.</p>
     </div>`;
 }
@@ -776,7 +778,8 @@ function rendre() {
   const rechercheActive = document.activeElement?.id === "recherche";
 
   const corps = { synthese: ecranSynthese, evolution: ecranEvolution, operations: ecranOperations, "a-classer": ecranAClasser }[etat.onglet]();
-  racine.innerHTML = `
+  racine.classList.toggle("masque", etat.masque);
+  const html = `
     ${entete()}
     ${etat.erreur ? `<p class="erreur">${echapper(etat.erreur)}</p>` : ""}
     ${corps}
@@ -784,6 +787,8 @@ function rendre() {
     ${etat.fiche !== null ? ficheOperation() : ""}
     ${etat.ficheAVenir !== null ? ficheAVenir() : ""}
     ${etat.message ? `<div class="message" role="status">${echapper(etat.message)}</div>` : ""}`;
+  // Montants masqués : on retire aussi le signe, qui dirait si le solde est positif ou négatif
+  racine.innerHTML = etat.masque ? html.replace(/[+-](?=XXX €)/g, "") : html;
 
   if (rechercheActive) {
     const champ = document.getElementById("recherche");

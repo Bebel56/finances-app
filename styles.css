@@ -314,3 +314,9 @@ div.ligne-hors.fixe, div.ligne-compte.fixe { cursor: default; }
 .ligne-venir .montant { font-size: 15px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .fois { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .fois .categorie { text-align: center; }
+
+/* ── Montants masqués : ni couleur de solde, ni barres proportionnelles ─── */
+.masque .positif, .masque .negatif { color: inherit; }
+.masque .jauge { display: none; }
+.masque .barre { height: 34px !important; background: var(--texte-3) !important; }
+.masque .legende { display: none; }
