@@ -299,3 +299,6 @@ button { cursor: pointer; }
 div.ligne-hors.fixe, div.ligne-compte.fixe { cursor: default; }
 .ligne-hors.total { border-top: 1px solid var(--trait); padding-top: 12px; font-weight: 600; }
 .ligne-hors.total span:first-child { color: var(--texte); }
+
+.bandeau.info { background: var(--accent-fond); color: var(--accent); font-weight: 400; font-size: 14px; gap: 10px; }
+.bandeau.info svg { flex: none; }

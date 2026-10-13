@@ -24,7 +24,8 @@ const TYPES = {
 };
 
 function lireMode() {
-  try { return localStorage.getItem("mode") === "paie" ? "paie" : "mois"; } catch { return "mois"; }
+  // Par défaut, de salaire à salaire : un salaire versé fin de mois finance le mois suivant
+  try { return localStorage.getItem("mode") === "mois" ? "mois" : "paie"; } catch { return "paie"; }
 }
 
 const etat = {
@@ -45,6 +46,7 @@ const etat = {
   categories: [],
   comptesCourants: [],     // { societe, apports, remboursements, solde }
   emprunts: null,          // { emprunte, rembourse, reste_du, nb_mouvements }
+  salairePrecedent: null,  // vue par mois : salaire versé fin du mois d'avant { date_operation, montant }
   societe: null,           // société dont on consulte les mouvements (toutes dates)
   mouvementsSociete: [],
   recherche: "",
@@ -203,6 +205,23 @@ async function chargerMois() {
     .order("transaction_id", { ascending: false });
   if (error) throw error;
   etat.operations = data;
+  await chargerSalairePrecedent();
+}
+
+// Vue par mois : un salaire versé à partir du 25 compte dans son mois de versement, et le mois
+// suivant paraît sans revenu. On le repère pour l'expliquer à l'écran.
+async function chargerSalairePrecedent() {
+  etat.salairePrecedent = null;
+  if (etat.mode !== "mois" || !etat.mois) return;
+  if (etat.operations.some((o) => o.nature_entree === "salaire")) return;
+  const debut = new Date(`${etat.mois}T00:00:00Z`);
+  debut.setUTCMonth(debut.getUTCMonth() - 1);
+  const depuis = `${debut.toISOString().slice(0, 8)}25`;
+  const { data, error } = await sb.from("transactions").select("date_operation, montant")
+    .eq("nature_entree", "salaire").gte("date_operation", depuis).lt("date_operation", etat.mois)
+    .order("date_operation", { ascending: false }).limit(1);
+  if (error) throw error;
+  etat.salairePrecedent = data[0] ?? null;
 }
 
 // Les 12 mois affichés dans Évolution. La fenêtre ne glisse que si le mois choisi en sort.
@@ -397,6 +416,7 @@ function ecranSynthese() {
       <div class="chiffre"><div class="nom">Solde</div><div class="valeur ${t.solde >= 0 ? "positif" : "negatif"}">${t.solde >= 0 ? "+" : ""}${eurosRonds.format(t.solde)}</div></div>
     </div>
     ${parJour}
+    ${etat.salairePrecedent ? `<button class="bandeau info" data-action="mode" data-mode="paie"><span>Ton salaire de ${eurosRonds.format(etat.salairePrecedent.montant)} a été versé le ${jourEnLettres(etat.salairePrecedent.date_operation)} : il compte dans le mois précédent. Voir de salaire à salaire</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>` : ""}
     ${nb ? `<button class="bandeau" data-action="onglet" data-onglet="a-classer"><span>${nb} opération${nb > 1 ? "s" : ""} à classer</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>` : ""}
     <h2 class="titre-section">Dépenses par catégorie</h2>
     ${categories.length ? `<div class="carte">${categories.map(([nom, montant]) => `
