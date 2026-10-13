@@ -20,12 +20,17 @@ const NATURES_REVENU = ["salaire", "dividendes", "autre"];
 const NATURES_HORS_BUDGET = ["compte_courant", "desepargne", "remboursement", "emprunt"];
 const TYPES = {
   depense: "Dépense", entree: "Entrée", virement_interne: "Virement interne", epargne: "Épargne", emprunt: "Emprunt",
+  apport: "Apport",
   compte_courant: "Compte courant d'associé", desepargne: "Désépargne", remboursement: "Remboursement reçu",
 };
 
 function lireMode() {
   // Par défaut, de salaire à salaire : un salaire versé fin de mois finance le mois suivant
   try { return localStorage.getItem("mode") === "mois" ? "mois" : "paie"; } catch { return "paie"; }
+}
+
+function lireCompte() {
+  try { return localStorage.getItem("compte"); } catch { return null; }
 }
 
 function lireMasque() {
@@ -35,6 +40,9 @@ function lireMasque() {
 const etat = {
   masque: lireMasque(),    // montants remplacés par XXX (bouton œil, ou deux secousses du téléphone)
   mode: lireMode(),        // "mois" (calendrier) | "paie" (de salaire à salaire)
+  comptes: [],             // comptes accessibles : { compte, nom, type }
+  compte: lireCompte(),    // compte affiché
+  apports: [],             // compte commun : { mois, membre, verse, retire, net }
   session: null,
   ecran: null,             // null (application) | "code" | "activation"
   doubleAuthActive: false,
@@ -112,7 +120,10 @@ function finDeMois(mois) {
 const libelleCourt = (libelle) => libelle.replace(/^CARTE \d{2}\/\d{2} /, "");
 
 // En mode « paie », les données sont rangées par période et non par mois du calendrier
-const cle = () => (etat.mode === "paie" ? "periode" : "mois");
+// Un compte commun n'a pas de salaire : il se lit toujours par mois
+const estCommun = () => etat.comptes.find((c) => c.compte === etat.compte)?.type === "commun";
+const mode = () => (estCommun() ? "mois" : etat.mode);
+const cle = () => (mode() === "paie" ? "periode" : "mois");
 
 function jourMois(date) {
   const [, m, j] = date.split("-");
@@ -193,28 +204,46 @@ function lireCode(formulaire) {
 
 // ── Données ────────────────────────────────────────────────────────────────────
 // Totaux par mois ou par période de paie, selon le mode
-async function chargerFlux() {
-  const requete = etat.mode === "paie"
-    ? sb.from("flux_periodes").select("periode, est_periode_de_paie, debut, fin, en_cours, nb_jours, entrees, depenses, solde").order("periode")
-    : sb.from("flux_mensuels").select("mois, entrees, depenses, solde").order("mois");
-  const { data, error } = await requete;
+async function chargerComptes() {
+  const { data, error } = await sb.rpc("mes_comptes");
   if (error) throw error;
-  etat.flux = new Map(data.map((l) => [l[cle()], { ...l, entrees: Number(l.entrees), depenses: Number(l.depenses), solde: Number(l.solde) }]));
-  etat.listeMois = data.map((l) => l[cle()]);
+  etat.comptes = data;
+  if (!data.some((c) => c.compte === etat.compte)) etat.compte = (data.find((c) => c.type === "perso") ?? data[0])?.compte ?? null;
+}
+
+async function chargerFlux() {
+  const requete = mode() === "paie"
+    ? sb.from("flux_periodes").select("periode, est_periode_de_paie, debut, fin, en_cours, nb_jours, entrees, depenses, solde").eq("compte", etat.compte).order("periode")
+    : sb.from("flux_mensuels").select("mois, entrees, depenses, solde").eq("compte", etat.compte).order("mois");
+  const [flux, apports] = await Promise.all([
+    requete,
+    estCommun() ? sb.from("apports_mensuels").select("mois, membre, verse, retire, net").eq("compte", etat.compte).order("mois") : { data: [] },
+  ]);
+  if (flux.error) throw flux.error;
+  if (apports.error) throw apports.error;
+  etat.apports = apports.data.map((a) => ({ ...a, verse: Number(a.verse), retire: Number(a.retire), net: Number(a.net) }));
+
+  etat.flux = new Map(flux.data.map((l) => {
+    // Compte commun : les « entrées » sont les apports nets des membres du foyer
+    const entrees = estCommun() ? etat.apports.filter((a) => a.mois === l.mois).reduce((t, a) => t + a.net, 0) : Number(l.entrees);
+    const depenses = Number(l.depenses);
+    return [l[cle()], { ...l, entrees, depenses, solde: entrees - depenses }];
+  }));
+  etat.listeMois = flux.data.map((l) => l[cle()]);
 }
 
 async function chargerComptesCourants() {
-  const { data, error } = await sb.from("comptes_courants").select("societe, apports, remboursements, net, solde, historique_depuis").order("societe");
+  const { data, error } = await sb.from("comptes_courants").select("societe, apports, remboursements, net, solde, historique_depuis").eq("compte", etat.compte).order("societe");
   if (error) throw error;
   etat.comptesCourants = data;
-  const aVenir = await sb.from("a_venir").select("*").order("date_prevue");
+  const aVenir = await sb.from("a_venir").select("*").eq("compte", etat.compte).order("date_prevue");
   if (aVenir.error) throw aVenir.error;
   etat.aVenir = aVenir.data;
-  const emprunts = await sb.from("emprunts").select("emprunte, rembourse, reste_du, nb_mouvements").maybeSingle();
+  const emprunts = await sb.from("emprunts").select("emprunte, rembourse, reste_du, nb_mouvements").eq("compte", etat.compte).maybeSingle();
   if (emprunts.error) throw emprunts.error;
   etat.emprunts = emprunts.data;
   if (etat.societe) {
-    const mouvements = await sb.from("transactions").select("*").eq("type_flux", "compte_courant")
+    const mouvements = await sb.from("transactions").select("*").eq("compte", etat.compte).eq("type_flux", "compte_courant")
       .eq("societe", etat.societe).order("date_operation", { ascending: false });
     if (mouvements.error) throw mouvements.error;
     etat.mouvementsSociete = mouvements.data;
@@ -222,6 +251,7 @@ async function chargerComptesCourants() {
 }
 
 async function chargerReferences() {
+  if (!etat.comptes.length) await chargerComptes();
   const [, categories] = await Promise.all([
     chargerFlux(),
     sb.from("categories").select("categorie").order("categorie"),
@@ -240,6 +270,7 @@ async function chargerMois() {
   const { data, error } = await sb
     .from("transactions")
     .select("*")
+    .eq("compte", etat.compte)
     .eq(cle(), etat.mois)
     .order("date_operation", { ascending: false })
     .order("transaction_id", { ascending: false });
@@ -252,13 +283,13 @@ async function chargerMois() {
 // suivant paraît sans revenu. On le repère pour l'expliquer à l'écran.
 async function chargerSalairePrecedent() {
   etat.salairePrecedent = null;
-  if (etat.mode !== "mois" || !etat.mois) return;
+  if (mode() !== "mois" || estCommun() || !etat.mois) return;
   if (etat.operations.some((o) => o.nature_entree === "salaire")) return;
   const debut = new Date(`${etat.mois}T00:00:00Z`);
   debut.setUTCMonth(debut.getUTCMonth() - 1);
   const depuis = `${debut.toISOString().slice(0, 8)}25`;
   const { data, error } = await sb.from("transactions").select("date_operation, montant")
-    .eq("nature_entree", "salaire").gte("date_operation", depuis).lt("date_operation", etat.mois)
+    .eq("compte", etat.compte).eq("nature_entree", "salaire").gte("date_operation", depuis).lt("date_operation", etat.mois)
     .order("date_operation", { ascending: false }).limit(1);
   if (error) throw error;
   etat.salairePrecedent = data[0] ?? null;
@@ -280,13 +311,13 @@ function fenetre12() {
 async function chargerEvolution(forcer = false) {
   const mois = fenetre12();
   if (!mois.length) return;
-  const cleFenetre = `${etat.mode}|${mois[0]}|${mois[mois.length - 1]}`;
+  const cleFenetre = `${etat.compte}|${mode()}|${mois[0]}|${mois[mois.length - 1]}`;
   if (!forcer && cleFenetre === etat.cleEvolution) return;
 
-  const vue = etat.mode === "paie" ? "depenses_periodes" : "depenses_mensuelles";
+  const vue = mode() === "paie" ? "depenses_periodes" : "depenses_mensuelles";
   const [, depenses] = await Promise.all([
     chargerFlux(),
-    sb.from(vue).select(`${cle()}, categorie, montant`).gte(cle(), mois[0]).lte(cle(), mois[mois.length - 1]),
+    sb.from(vue).select(`${cle()}, categorie, montant`).eq("compte", etat.compte).gte(cle(), mois[0]).lte(cle(), mois[mois.length - 1]),
   ]);
   if (depenses.error) throw depenses.error;
 
@@ -352,7 +383,9 @@ const aClasser = () => etat.operations.filter((o) => (o.type_flux === "depense" 
 
 function totaux() {
   const somme = (type) => etat.operations.filter((o) => o.type_flux === type).reduce((s, o) => s + Number(o.montant), 0);
-  const entrees = somme("entree");
+  // Compte commun : ce que les membres ont versé, moins ce qu'ils ont repris
+  const apportsNets = etat.operations.filter((o) => o.type_flux === "apport").reduce((s, o) => s + (o.sens === "entree" ? 1 : -1) * Number(o.montant), 0);
+  const entrees = estCommun() ? apportsNets : somme("entree");
   const sorties = somme("depense");
   return { entrees, sorties, solde: entrees - sorties };
 }
@@ -424,18 +457,21 @@ function entete() {
       </div>
     </header>
     <div class="sous-entete">
-      <div class="bascule" role="group" aria-label="Découpage">
+      ${etat.comptes.length > 1 ? `<div class="bascule" role="group" aria-label="Compte">${etat.comptes.map((c) => `
+        <button class="${c.compte === etat.compte ? "actif" : ""}" data-action="compte" data-compte="${echapper(c.compte)}">${echapper(c.nom)}</button>`).join("")}
+      </div>` : ""}
+      ${estCommun() ? "" : `<div class="bascule" role="group" aria-label="Découpage">
         <button class="${etat.mode === "mois" ? "actif" : ""}" data-action="mode" data-mode="mois">Par mois</button>
         <button class="${etat.mode === "paie" ? "actif" : ""}" data-action="mode" data-mode="paie">Par paie</button>
-      </div>
-      <span class="dates">${echapper(datesPeriode())}</span>
-    </div>`;
+      </div>`}
+    </div>
+    ${datesPeriode() ? `<p class="dates">${echapper(datesPeriode())}</p>` : ""}`;
 }
 
 // « 28 août → 28 sept. · 32 jours » pour une période de paie
 function datesPeriode() {
   const p = etat.flux.get(etat.mois);
-  if (etat.mode !== "paie" || !p?.est_periode_de_paie) return "";
+  if (mode() !== "paie" || !p?.est_periode_de_paie) return "";
   return p.en_cours
     ? `Depuis le ${jourEnLettres(p.debut)} · ${p.nb_jours} jours`
     : `${jourEnLettres(p.debut)} → ${jourEnLettres(p.fin)} · ${p.nb_jours} jours`;
@@ -447,20 +483,21 @@ function ecranSynthese() {
   const max = Math.max(0, ...categories.map(([, montant]) => montant));
   const nb = aClasser().length;
   const periode = etat.flux.get(etat.mois);
-  const parJour = etat.mode === "paie" && periode?.est_periode_de_paie && periode.nb_jours > 0
+  const parJour = mode() === "paie" && periode?.est_periode_de_paie && periode.nb_jours > 0
     ? `<p class="par-jour">Dépense moyenne : ${eurosRonds.format(t.sorties / periode.nb_jours)} par jour</p>` : "";
 
   return `
     <div class="chiffres">
-      <div class="chiffre"><div class="nom">Entrées</div><div class="valeur">${eurosRonds.format(t.entrees)}</div></div>
+      <div class="chiffre"><div class="nom">${estCommun() ? "Apports" : "Entrées"}</div><div class="valeur">${eurosRonds.format(t.entrees)}</div></div>
       <div class="chiffre"><div class="nom">Dépenses</div><div class="valeur">${eurosRonds.format(t.sorties)}</div></div>
       <div class="chiffre"><div class="nom">Solde</div><div class="valeur ${t.solde >= 0 ? "positif" : "negatif"}">${t.solde >= 0 ? "+" : ""}${eurosRonds.format(t.solde)}</div></div>
     </div>
     ${parJour}
     ${etat.salairePrecedent ? `<button class="bandeau info" data-action="mode" data-mode="paie"><span>Ton salaire de ${eurosRonds.format(etat.salairePrecedent.montant)} a été versé le ${jourEnLettres(etat.salairePrecedent.date_operation)} : il compte dans le mois précédent. Voir de salaire à salaire</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>` : ""}
     ${nb ? `<button class="bandeau" data-action="onglet" data-onglet="a-classer"><span>${nb} opération${nb > 1 ? "s" : ""} à classer</span>${ICONES.suivant.replace("<svg", '<svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"')}</button>` : ""}
+    ${carteApports()}
     ${carteAVenir()}
-    <h2 class="titre-section ${paiementsAVenir().length ? "espace" : ""}">Dépenses par catégorie</h2>
+    <h2 class="titre-section ${paiementsAVenir().length || estCommun() ? "espace" : ""}">Dépenses par catégorie</h2>
     ${categories.length ? `<div class="carte">${categories.map(([nom, montant]) => `
       <button class="ligne-cat" data-action="filtrer" data-categorie="${echapper(nom)}">
         <div class="haut"><span>${echapper(nom)}</span><span>${eurosRonds.format(montant)}</span></div>
@@ -529,13 +566,13 @@ function ecranEvolution() {
   const moisChoisi = mois.indexOf(etat.mois);
 
   return `
-    <h2 class="titre-section">Entrées et dépenses sur ${n} mois</h2>
+    <h2 class="titre-section">${estCommun() ? "Apports" : "Entrées"} et dépenses sur ${n} mois</h2>
     <div class="carte">
       <div class="graphe">${colonnes(mois, (i) => [["entree", flux[i].entrees], ["depense", flux[i].depenses]], maxFlux, (i) => `entrées ${eurosRonds.format(flux[i].entrees)}, dépenses ${eurosRonds.format(flux[i].depenses)}`)}</div>
-      <div class="legende"><span><i class="point entree"></i>Entrées</span><span><i class="point depense"></i>Dépenses</span></div>
+      <div class="legende"><span><i class="point entree"></i>${estCommun() ? "Apports" : "Entrées"}</span><span><i class="point depense"></i>Dépenses</span></div>
     </div>
     <div class="chiffres sous-graphe">
-      <div class="chiffre"><div class="nom">Entrées moy.</div><div class="valeur">${eurosRonds.format(total("entrees") / n)}</div></div>
+      <div class="chiffre"><div class="nom">${estCommun() ? "Apports moy." : "Entrées moy."}</div><div class="valeur">${eurosRonds.format(total("entrees") / n)}</div></div>
       <div class="chiffre"><div class="nom">Dépenses moy.</div><div class="valeur">${eurosRonds.format(total("depenses") / n)}</div></div>
       <div class="chiffre"><div class="nom">Solde cumulé</div><div class="valeur ${soldeCumule >= 0 ? "positif" : "negatif"}">${soldeCumule >= 0 ? "+" : ""}${eurosRonds.format(soldeCumule)}</div></div>
     </div>
@@ -555,11 +592,31 @@ function ecranEvolution() {
     </div>` : `<p class="vide">Aucune dépense sur la période.</p>`}`;
 }
 
+// Compte commun : qui a versé combien, ce mois-ci et depuis le début
+function carteApports() {
+  if (!estCommun()) return "";
+  const membres = [...new Set(etat.apports.map((a) => a.membre))].sort();
+  if (!membres.length) return "";
+  const net = (membre, mois) => etat.apports.filter((a) => a.membre === membre && (!mois || a.mois === mois)).reduce((s, a) => s + a.net, 0);
+  const cumul = membres.map((m) => net(m));
+  const ecart = membres.length === 2 ? cumul[0] - cumul[1] : 0;
+  const premier = etat.apports.map((a) => a.mois).sort()[0];
+
+  return `
+    <h2 class="titre-section">Apports au compte</h2>
+    <div class="carte">
+      <div class="ligne-apport tete"><span></span><span>Ce mois</span><span>Depuis ${libelleMois(premier).toLowerCase().replace(/ (\d{4})$/, " $1")}</span></div>
+      ${membres.map((m, i) => `
+      <div class="ligne-apport"><span>${echapper(m)}</span><span>${eurosRonds.format(net(m, etat.mois))}</span><span>${eurosRonds.format(cumul[i])}</span></div>`).join("")}
+      ${membres.length === 2 && !etat.masque ? `<p class="note">${Math.abs(ecart) < 1 ? "Apports équilibrés depuis le début." : `Depuis le début, ${echapper(ecart > 0 ? membres[0] : membres[1])} a versé ${eurosRonds.format(Math.abs(ecart))} de plus que ${echapper(ecart > 0 ? membres[1] : membres[0])}.`}</p>` : ""}
+    </div>`;
+}
+
 // Dernier jour de la période affichée si elle est en cours, sinon null (pas de prévision sur le passé)
 function horizonPrevisions() {
   const jour = aujourdhui();
   const p = etat.flux.get(etat.mois);
-  if (etat.mode === "paie" && p?.est_periode_de_paie) {
+  if (mode() === "paie" && p?.est_periode_de_paie) {
     if (!p.en_cours) return null;
     const fin = veilleMoisSuivant(p.debut);
     // Salaire en retard par rapport au mois dernier : on regarde une semaine devant
@@ -647,14 +704,14 @@ function carteVariation() {
   return `
     <h2 class="titre-section espace">Variation du compte</h2>
     <div class="carte">
-      <div class="ligne-hors fixe"><span>Solde du budget</span><span>${montantSigne(t.solde)}</span></div>
+      <div class="ligne-hors fixe"><span>${estCommun() ? "Apports moins dépenses" : "Solde du budget"}</span><span>${montantSigne(t.solde)}</span></div>
       ${avance > 0.005 ? `<div class="ligne-hors fixe"><span>Avancé pour d'autres ou remboursé</span><span>${montantSigne(-avance)}</span></div>` : ""}
       ${lignes.map((l) => `
       <button class="ligne-hors" data-action="filtrer-type" data-type="${l.type}" data-sens="${l.sens}" data-nom="${echapper(l.nom)}">
         <span>${echapper(l.nom)}</span><span>${montantSigne(l.sens === "entree" ? l.montant : -l.montant)}</span>
       </button>`).join("")}
-      <div class="ligne-hors fixe total"><span>${etat.masque ? "Variation du compte" : `Ton compte a ${variation >= 0 ? "gagné" : "perdu"}`}</span><span class="${variation >= 0 ? "positif" : "negatif"}">${montantSigne(variation)}</span></div>
-      <p class="note">Le solde du budget dit si tu as dépensé plus que tes revenus. La variation du compte ajoute tout le reste : épargne, emprunts, comptes courants, remboursements.</p>
+      <div class="ligne-hors fixe total"><span>${etat.masque ? "Variation du compte" : `${estCommun() ? "Le compte" : "Ton compte"} a ${variation >= 0 ? "gagné" : "perdu"}`}</span><span class="${variation >= 0 ? "positif" : "negatif"}">${montantSigne(variation)}</span></div>
+      <p class="note">${estCommun() ? "Ce que le compte commun a gagné ou perdu sur le mois : apports des membres, dépenses et remboursements." : "Le solde du budget dit si tu as dépensé plus que tes revenus. La variation du compte ajoute tout le reste : épargne, emprunts, comptes courants, remboursements."}</p>
     </div>`;
 }
 
@@ -663,6 +720,8 @@ function ligneOperation(o) {
   let etiquette = "";
   if (o.type_flux === "depense") {
     etiquette = `<span class="etiquette ${o.categorie === A_CLASSER ? "a-classer" : ""}">${echapper(o.categorie === A_CLASSER ? "À classer" : o.categorie)}</span>`;
+  } else if (o.type_flux === "apport") {
+    etiquette = `<span class="etiquette">${o.sens === "entree" ? "Apport" : "Retrait"}${o.membre ? ` · ${echapper(o.membre)}` : ""}</span>`;
   } else if (o.type_flux !== "entree") {
     etiquette = `<span class="etiquette">${echapper(TYPES[o.type_flux] ?? o.type_flux)}</span>`;
   } else if (o.a_qualifier) {
@@ -709,7 +768,7 @@ function ficheOperation() {
   // L'épargne se classe et s'ajuste comme une dépense : c'est sa catégorie qui la sort du budget
   const estDepense = o.sens === "sortie" && ["depense", "epargne", "emprunt"].includes(o.type_flux);
   // Toute entrée d'argent peut être qualifiée, sauf un virement entre tes propres comptes
-  const estQualifiable = o.sens === "entree" && o.type_flux !== "virement_interne";
+  const estQualifiable = o.sens === "entree" && !["virement_interne", "apport"].includes(o.type_flux) && !estCommun();
   const type = TYPES[o.type_flux] ?? o.type_flux;
   const boutonsNature = (liste) => liste.map((valeur) => `
             <button class="categorie ${valeur === o.nature_entree ? "choisie" : ""}" data-action="qualifier" data-nature="${valeur}">${NATURES[valeur]}</button>`).join("");
@@ -755,6 +814,8 @@ function ficheOperation() {
           <p class="note">Hors budget : argent que tu récupères (apport remboursé par une société, retrait d'épargne, avance remboursée par un proche) ou que tu devras rendre (emprunt).</p>
           ${o.nature_entree ? `<button class="lien" data-action="annuler-qualification">Retirer la nature</button>` : ""}
         ` : o.type_flux === "compte_courant" ? `<p class="note">Apport en compte courant${o.societe ? ` à ${echapper(o.societe)}` : ""} : hors budget, suivi dans les comptes courants d'associé.</p>`
+          : o.type_flux === "apport" ? `<p class="note">${o.sens === "entree" ? "Versement" : "Retrait"}${o.membre ? ` de ${echapper(o.membre)}` : ""} sur le compte commun : compté dans les apports, pas dans les dépenses.</p>`
+          : estCommun() ? `<p class="note">Remboursement reçu sur le compte commun : il ne compte pas comme un apport.</p>`
           : `<p class="note">Virement entre tes comptes : il ne compte ni dans les entrées ni dans les dépenses.</p>`}
       </section>
     </div>`;
@@ -924,7 +985,7 @@ racine.addEventListener("click", async (evenement) => {
     case "ignorer-recurrent": {
       const a = etat.aVenir[etat.ficheAVenir];
       etat.ficheAVenir = null;
-      await enregistrer("ignorer_recurrent", { p_cle: a.cle }, "Paiement retiré des prévisions");
+      await enregistrer("ignorer_recurrent", { p_compte: etat.compte, p_cle: a.cle }, "Paiement retiré des prévisions");
       break;
     }
     case "retirer-echeancier": {
@@ -978,6 +1039,22 @@ racine.addEventListener("click", async (evenement) => {
       await enregistrer("annuler_qualification", { p_transaction_id: id }, "Nature retirée");
       break;
     }
+    case "compte":
+      if (cible.dataset.compte !== etat.compte) {
+        etat.compte = cible.dataset.compte;
+        try { localStorage.setItem("compte", etat.compte); } catch { /* le choix vaut pour cette session */ }
+        Object.assign(etat, {
+          mois: null, operations: [], filtreCategorie: null, filtreType: null, societe: null, mouvementsSociete: [],
+          cleEvolution: null, finFenetre: null, categorieEvolution: null, fiche: null, ficheAVenir: null, recherche: "",
+        });
+        window.scrollTo(0, 0);
+        await toutCharger();
+        if (etat.onglet === "evolution") {
+          try { await chargerEvolution(); } catch (e) { etat.erreur = "Impossible de charger l'évolution."; console.error(e); }
+          rendre();
+        }
+      }
+      break;
     case "mode":
       if (cible.dataset.mode !== etat.mode) {
         etat.mode = cible.dataset.mode;
@@ -1086,7 +1163,7 @@ sb.auth.onAuthStateChange((evenement, session) => {
     // Hors du rappel d'authentification, pour ne pas bloquer le client Supabase
     setTimeout(apresConnexion, 0);
   } else if (!session) {
-    Object.assign(etat, { operations: [], listeMois: [], mois: null, fiche: null, onglet: "synthese", ecran: null, mfa: null, doubleAuthActive: false, flux: new Map(), depensesMensuelles: [], finFenetre: null, cleEvolution: null });
+    Object.assign(etat, { operations: [], listeMois: [], mois: null, fiche: null, onglet: "synthese", ecran: null, mfa: null, doubleAuthActive: false, flux: new Map(), depensesMensuelles: [], finFenetre: null, cleEvolution: null, comptes: [], apports: [] });
     rendre();
   }
 });
