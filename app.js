@@ -42,7 +42,9 @@ const etat = {
   mode: lireMode(),        // "mois" (calendrier) | "paie" (de salaire à salaire)
   comptes: [],             // comptes accessibles : { compte, nom, type }
   compte: lireCompte(),    // compte affiché
-  apports: [],             // compte commun : { mois, membre, verse, retire, net }
+  apports: [],             // compte commun : { mois, membre, verse, retire, correction, net }
+  corrections: [],         // compte commun : règlements entre membres et dépenses payées hors du compte
+  ficheCorrection: false,  // formulaire de correction des apports ouvert
   session: null,
   ecran: null,             // null (application) | "code" | "activation"
   doubleAuthActive: false,
@@ -215,17 +217,21 @@ async function chargerFlux() {
   const requete = mode() === "paie"
     ? sb.from("flux_periodes").select("periode, est_periode_de_paie, debut, fin, en_cours, nb_jours, entrees, depenses, solde").eq("compte", etat.compte).order("periode")
     : sb.from("flux_mensuels").select("mois, entrees, depenses, solde").eq("compte", etat.compte).order("mois");
-  const [flux, apports] = await Promise.all([
+  const [flux, apports, corrections] = await Promise.all([
     requete,
-    estCommun() ? sb.from("apports_mensuels").select("mois, membre, verse, retire, net").eq("compte", etat.compte).order("mois") : { data: [] },
+    estCommun() ? sb.from("apports_mensuels").select("mois, membre, verse, retire, correction, net").eq("compte", etat.compte).order("mois") : { data: [] },
+    estCommun() ? sb.from("corrections_apports").select("*").eq("compte", etat.compte).order("date_correction", { ascending: false }) : { data: [] },
   ]);
   if (flux.error) throw flux.error;
   if (apports.error) throw apports.error;
-  etat.apports = apports.data.map((a) => ({ ...a, verse: Number(a.verse), retire: Number(a.retire), net: Number(a.net) }));
+  if (corrections.error) throw corrections.error;
+  etat.apports = apports.data.map((a) => ({ ...a, verse: Number(a.verse), retire: Number(a.retire), correction: Number(a.correction), net: Number(a.net) }));
+  etat.corrections = corrections.data;
 
   etat.flux = new Map(flux.data.map((l) => {
     // Compte commun : les « entrées » sont les apports nets des membres du foyer
-    const entrees = estCommun() ? etat.apports.filter((a) => a.mois === l.mois).reduce((t, a) => t + a.net, 0) : Number(l.entrees);
+    // (ce qui est réellement arrivé sur le compte, sans les corrections saisies à la main)
+    const entrees = estCommun() ? etat.apports.filter((a) => a.mois === l.mois).reduce((t, a) => t + a.verse - a.retire, 0) : Number(l.entrees);
     const depenses = Number(l.depenses);
     return [l[cle()], { ...l, entrees, depenses, solde: entrees - depenses }];
   }));
@@ -592,23 +598,70 @@ function ecranEvolution() {
     </div>` : `<p class="vide">Aucune dépense sur la période.</p>`}`;
 }
 
-// Compte commun : qui a versé combien, ce mois-ci et depuis le début
+// Compte commun : qui a apporté combien, ce mois-ci et depuis le début, corrections comprises
+const membresDuCompte = () => [...new Set(etat.apports.map((a) => a.membre))].sort();
+
 function carteApports() {
   if (!estCommun()) return "";
-  const membres = [...new Set(etat.apports.map((a) => a.membre))].sort();
+  const membres = membresDuCompte();
   if (!membres.length) return "";
-  const net = (membre, mois) => etat.apports.filter((a) => a.membre === membre && (!mois || a.mois === mois)).reduce((s, a) => s + a.net, 0);
-  const cumul = membres.map((m) => net(m));
+  const somme = (champ, membre, mois) => etat.apports.filter((a) => a.membre === membre && (!mois || a.mois === mois)).reduce((t, a) => t + a[champ], 0);
+  const cumul = membres.map((m) => somme("net", m));
   const ecart = membres.length === 2 ? cumul[0] - cumul[1] : 0;
   const premier = etat.apports.map((a) => a.mois).sort()[0];
+  const aDesCorrections = etat.corrections.length > 0;
 
   return `
     <h2 class="titre-section">Apports au compte</h2>
     <div class="carte">
-      <div class="ligne-apport tete"><span></span><span>Ce mois</span><span>Depuis ${libelleMois(premier).toLowerCase().replace(/ (\d{4})$/, " $1")}</span></div>
+      <div class="ligne-apport tete"><span></span><span>Ce mois</span><span>Depuis ${libelleMois(premier).toLowerCase()}</span></div>
       ${membres.map((m, i) => `
-      <div class="ligne-apport"><span>${echapper(m)}</span><span>${eurosRonds.format(net(m, etat.mois))}</span><span>${eurosRonds.format(cumul[i])}</span></div>`).join("")}
-      ${membres.length === 2 && !etat.masque ? `<p class="note">${Math.abs(ecart) < 1 ? "Apports équilibrés depuis le début." : `Depuis le début, ${echapper(ecart > 0 ? membres[0] : membres[1])} a versé ${eurosRonds.format(Math.abs(ecart))} de plus que ${echapper(ecart > 0 ? membres[1] : membres[0])}.`}</p>` : ""}
+      <div class="ligne-apport"><span>${echapper(m)}${aDesCorrections && !etat.masque ? `<small>dont ${eurosRonds.format(somme("correction", m))} hors compte</small>` : ""}</span><span>${eurosRonds.format(somme("net", m, etat.mois))}</span><span>${eurosRonds.format(cumul[i])}</span></div>`).join("")}
+      ${membres.length === 2 && !etat.masque ? `<p class="note">${Math.abs(ecart) < 1 ? "Apports équilibrés depuis le début." : `Depuis le début, ${echapper(ecart > 0 ? membres[0] : membres[1])} a apporté ${eurosRonds.format(Math.abs(ecart))} de plus que ${echapper(ecart > 0 ? membres[1] : membres[0])}.`}</p>` : ""}
+      <button class="bouton secondaire" data-action="ouvrir-correction">Corriger les apports${aDesCorrections ? ` (${etat.corrections.length})` : ""}</button>
+    </div>`;
+}
+
+// Ce qui s'est passé entre les membres en dehors du compte commun
+function ficheCorrections() {
+  const membres = membresDuCompte();
+  const choix = [
+    ...membres.flatMap((a) => membres.filter((b) => b !== a).map((b) => [`${a}|${b}`, `${a} a donné de l'argent à ${b}`])),
+    ...membres.map((a) => [`${a}|`, `${a} a payé une dépense commune avec son compte perso`]),
+  ];
+  return `
+    <div class="voile" data-action="fermer">
+      <section class="fiche" role="dialog" aria-modal="true" aria-label="Corriger les apports">
+        <div class="tete">
+          <h2>Corriger les apports</h2>
+          <button class="icone" data-action="fermer" aria-label="Fermer">${ICONES.fermer}</button>
+        </div>
+        <p class="sous">Pour ce qui s'est passé entre vous en dehors du compte commun.</p>
+        <form id="correction">
+          <label class="champ"><span>Ce qui s'est passé</span>
+            <select class="choix" name="type">${choix.map(([valeur, texte]) => `<option value="${echapper(valeur)}">${echapper(texte)}</option>`).join("")}</select></label>
+          <label class="champ"><span>Montant en euros</span>
+            <input type="text" name="montant" inputmode="decimal" placeholder="20,00" required></label>
+          <label class="champ"><span>Date</span>
+            <input type="date" name="date" value="${aujourdhui()}" max="${aujourdhui()}" required></label>
+          <label class="champ"><span>Note (facultative)</span>
+            <input type="text" name="note" maxlength="200" placeholder="Courses du week-end"></label>
+          <button class="bouton" type="submit">Enregistrer</button>
+        </form>
+        <p class="note">Un don d'argent augmente l'apport de celui qui donne et diminue celui de l'autre. Une dépense commune payée avec un compte perso augmente l'apport de celui qui a payé.</p>
+        ${etat.corrections.length ? `
+          <h3>Corrections enregistrées</h3>
+          <div class="operations">${etat.corrections.map((c) => `
+            <div class="operation">
+              <div class="texte">
+                <div class="libelle">${echapper(c.beneficiaire ? `${c.membre} → ${c.beneficiaire}` : `${c.membre} · dépense commune`)}</div>
+                <div class="detail"><span>${c.date_correction.split("-").reverse().join("/")}</span>${c.note ? `<span>${echapper(c.note)}</span>` : ""}</div>
+              </div>
+              <div class="montant">${euros.format(c.montant)}</div>
+              <button class="icone" data-action="supprimer-correction" data-id="${c.correction_id}" aria-label="Supprimer cette correction">${ICONES.fermer}</button>
+            </div>`).join("")}
+          </div>` : ""}
+      </section>
     </div>`;
 }
 
@@ -847,6 +900,7 @@ function rendre() {
     ${barreOnglets()}
     ${etat.fiche !== null ? ficheOperation() : ""}
     ${etat.ficheAVenir !== null ? ficheAVenir() : ""}
+    ${etat.ficheCorrection ? ficheCorrections() : ""}
     ${etat.message ? `<div class="message" role="status">${echapper(etat.message)}</div>` : ""}`;
   // Montants masqués : on retire aussi le signe, qui dirait si le solde est positif ou négatif
   racine.innerHTML = etat.masque ? html.replace(/[+-](?=XXX €)/g, "") : html;
@@ -973,9 +1027,17 @@ racine.addEventListener("click", async (evenement) => {
       etat.fiche = Number(cible.dataset.id);
       rendre();
       break;
+    case "ouvrir-correction":
+      etat.ficheCorrection = true;
+      rendre();
+      break;
+    case "supprimer-correction":
+      await enregistrer("supprimer_correction_apport", { p_id: Number(cible.dataset.id) }, "Correction supprimée");
+      break;
     case "fermer":
       etat.fiche = null;
       etat.ficheAVenir = null;
+      etat.ficheCorrection = false;
       rendre();
       break;
     case "ouvrir-a-venir":
@@ -1044,7 +1106,7 @@ racine.addEventListener("click", async (evenement) => {
         etat.compte = cible.dataset.compte;
         try { localStorage.setItem("compte", etat.compte); } catch { /* le choix vaut pour cette session */ }
         Object.assign(etat, {
-          mois: null, operations: [], filtreCategorie: null, filtreType: null, societe: null, mouvementsSociete: [],
+          mois: null, operations: [], filtreCategorie: null, filtreType: null, societe: null, mouvementsSociete: [], ficheCorrection: false,
           cleEvolution: null, finFenetre: null, categorieEvolution: null, fiche: null, ficheAVenir: null, recherche: "",
         });
         window.scrollTo(0, 0);
@@ -1138,6 +1200,23 @@ racine.addEventListener("submit", async (evenement) => {
     etat.mfa = null;
     await apresConnexion();
     if (activation) afficherMessage("Double authentification activée");
+    return;
+  }
+
+  if (formulaire.id === "correction") {
+    const donnees = new FormData(formulaire);
+    const saisie = String(donnees.get("montant")).trim().replace(/\s/g, "").replace(",", ".");
+    const montant = Number(saisie);
+    if (saisie === "" || !Number.isFinite(montant) || montant <= 0) {
+      afficherMessage("Saisis un montant, par exemple 20,00");
+      return;
+    }
+    const [membre, beneficiaire] = String(donnees.get("type")).split("|");
+    etat.ficheCorrection = false;
+    await enregistrer("ajouter_correction_apport", {
+      p_compte: etat.compte, p_date: donnees.get("date"), p_membre: membre,
+      p_beneficiaire: beneficiaire || null, p_montant: montant, p_note: String(donnees.get("note") || ""),
+    }, "Correction enregistrée");
     return;
   }
 
