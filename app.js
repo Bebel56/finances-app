@@ -28,7 +28,12 @@ function lireMode() {
   try { return localStorage.getItem("mode") === "mois" ? "mois" : "paie"; } catch { return "paie"; }
 }
 
+function lireMasque() {
+  try { return localStorage.getItem("masque") === "1"; } catch { return false; }
+}
+
 const etat = {
+  masque: lireMasque(),    // montants remplacés par XXX (bouton œil, ou deux secousses du téléphone)
   mode: lireMode(),        // "mois" (calendrier) | "paie" (de salaire à salaire)
   session: null,
   ecran: null,             // null (application) | "code" | "activation"
@@ -61,8 +66,13 @@ const etat = {
 };
 
 // ── Utilitaires ────────────────────────────────────────────────────────────────
-const euros = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" });
-const eurosRonds = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+// Tous les montants affichés passent par ces deux formats : c'est ici qu'ils sont masqués
+function formatEuros(options) {
+  const format = new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR", ...options });
+  return { format: (valeur) => (etat.masque ? "XXX €" : format.format(valeur)) };
+}
+const euros = formatEuros({});
+const eurosRonds = formatEuros({ maximumFractionDigits: 0 });
 
 function echapper(texte) {
   return String(texte ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -118,6 +128,8 @@ const ICONES = {
   suivant: '<svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>',
   sortir: '<svg viewBox="0 0 24 24"><path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/></svg>',
   fermer: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  oeil: '<svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>',
+  oeilBarre: '<svg viewBox="0 0 24 24"><path d="M3 3l18 18M10.6 5.1A9.6 9.6 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4M6.3 6.3A17 17 0 0 0 2 12s3.6 7 10 7a9.7 9.7 0 0 0 4.2-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
 };
 
 function afficherMessage(texte) {
@@ -407,6 +419,7 @@ function entete() {
       <div class="actions">
         <button class="icone" data-action="mois" data-decalage="-1" aria-label="Mois précédent" ${i <= 0 ? "disabled" : ""}>${ICONES.precedent}</button>
         <button class="icone" data-action="mois" data-decalage="1" aria-label="Mois suivant" ${i >= etat.listeMois.length - 1 ? "disabled" : ""}>${ICONES.suivant}</button>
+        <button class="icone" data-action="masquer" aria-label="${etat.masque ? "Afficher les montants" : "Masquer les montants"}" aria-pressed="${etat.masque}">${etat.masque ? ICONES.oeilBarre : ICONES.oeil}</button>
         <button class="icone" data-action="deconnexion" aria-label="Se déconnecter">${ICONES.sortir}</button>
       </div>
     </header>
@@ -719,7 +732,7 @@ function ficheOperation() {
 
           <h3>Montant réel</h3>
           <form class="ajustement" id="ajustement">
-            <input type="text" name="montant" inputmode="decimal" placeholder="${String(o.montant_original).replace(".", ",")}" aria-label="Montant réel en euros">
+            <input type="text" name="montant" inputmode="decimal" placeholder="${etat.masque ? "Montant" : String(o.montant_original).replace(".", ",")}" aria-label="Montant réel en euros">
             <button class="bouton" type="submit">Ajuster</button>
           </form>
           <p class="note">Pour une dépense partagée ou remboursée en partie. Le montant d'origine est conservé.</p>
@@ -778,6 +791,61 @@ function rendre() {
     champ.setSelectionRange(champ.value.length, champ.value.length);
   }
 }
+
+// ── Masquage des montants ──────────────────────────────────────────────────────
+function basculerMasque() {
+  etat.masque = !etat.masque;
+  try { localStorage.setItem("masque", etat.masque ? "1" : "0"); } catch { /* le choix vaut pour cette session */ }
+  rendre();
+}
+
+// Deux secousses rapprochées du téléphone masquent ou réaffichent les montants.
+// Sur iPhone, l'accès aux mouvements doit être autorisé après un geste : on le demande
+// au premier appui sur le bouton œil.
+const secousse = { ecoute: false, dernier: null, instants: [] };
+
+function surMouvement(evenement) {
+  const a = evenement.accelerationIncludingGravity;
+  if (!a || a.x === null) return;
+  const precedent = secousse.dernier;
+  secousse.dernier = { x: a.x, y: a.y, z: a.z };
+  if (!precedent) return;
+
+  const variation = Math.abs(a.x - precedent.x) + Math.abs(a.y - precedent.y) + Math.abs(a.z - precedent.z);
+  const maintenant = Date.now();
+  // Une secousse franche, comptée une seule fois même si elle dure quelques mesures
+  if (variation < 28 || maintenant - (secousse.instants.at(-1) ?? 0) < 300) return;
+
+  secousse.instants = [...secousse.instants.filter((t) => maintenant - t < 1500), maintenant];
+  if (secousse.instants.length >= 2) {
+    secousse.instants = [];
+    basculerMasque();
+  }
+}
+
+async function activerSecousse() {
+  if (secousse.ecoute || typeof DeviceMotionEvent === "undefined") return;
+  try {
+    if (typeof DeviceMotionEvent.requestPermission === "function") {
+      if ((await DeviceMotionEvent.requestPermission()) !== "granted") return;
+    }
+    window.addEventListener("devicemotion", surMouvement);
+    secousse.ecoute = true;
+    try { localStorage.setItem("secousse", "1"); } catch { /* sans importance */ }
+  } catch (e) {
+    console.error(e);
+  }
+}
+// Android et navigateurs sans demande d'autorisation : actif tout de suite
+if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission !== "function") activerSecousse();
+
+// iPhone : l'autorisation est redemandée à chaque lancement de l'application. Si la secousse a
+// déjà été activée une fois, on la réactive au premier appui, où qu'il soit.
+document.addEventListener("click", () => {
+  let dejaActivee = false;
+  try { dejaActivee = localStorage.getItem("secousse") === "1"; } catch { /* sans importance */ }
+  if (dejaActivee) activerSecousse();
+}, { once: true });
 
 // ── Interactions ───────────────────────────────────────────────────────────────
 racine.addEventListener("click", async (evenement) => {
@@ -922,6 +990,10 @@ racine.addEventListener("click", async (evenement) => {
       break;
     case "abandonner-2fa":
       await abandonnerActivation();
+      break;
+    case "masquer":
+      basculerMasque();
+      activerSecousse();
       break;
     case "deconnexion":
       await sb.auth.signOut();
