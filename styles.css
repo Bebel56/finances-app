@@ -332,3 +332,21 @@ p.dates { text-align: left; margin: 0 0 14px; }
 .carte > .bouton.secondaire { margin-top: 12px; }
 .champ input[type="date"] { -webkit-appearance: none; appearance: none; }
 div.operation { cursor: default; }
+
+/* ── Règle de classement par commerçant ────────────────── */
+.coche {
+  width: 100%; display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; margin-bottom: 10px;
+  border: 1px solid var(--trait); border-radius: var(--rayon);
+  background: var(--carte); text-align: left; font-size: 14px;
+}
+.coche.active { border-color: var(--accent); background: var(--accent-fond); }
+.coche .case {
+  flex: none; width: 20px; height: 20px; margin-top: 1px;
+  display: grid; place-items: center;
+  border: 1.5px solid var(--texte-3); border-radius: 5px; font-size: 13px; line-height: 1;
+}
+.coche.active .case { border-color: var(--accent); background: var(--accent); color: var(--carte); }
+.coche small { display: block; font-size: 12px; color: var(--texte-2); margin-top: 2px; }
+.note.regle { margin: 0 0 10px; }
+.note.regle .lien { padding: 0; font-size: 13px; }

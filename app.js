@@ -44,6 +44,7 @@ const etat = {
   compte: lireCompte(),    // compte affiché
   apports: [],             // compte commun : { mois, membre, verse, retire, correction, net }
   corrections: [],         // compte commun : règlements entre membres et dépenses payées hors du compte
+  pourTous: false,         // fiche d'une dépense : la catégorie choisie vaudra pour tout le commerçant
   ficheCorrection: false,  // formulaire de correction des apports ouvert
   session: null,
   ecran: null,             // null (application) | "code" | "activation"
@@ -839,6 +840,11 @@ function ficheOperation() {
 
         ${estDepense ? `
           <h3>Catégorie</h3>
+          ${o.categorie_regle ? `<p class="note regle">Règle en place : tous les paiements « ${echapper(libelleCourt(o.libelle))} » vont en ${echapper(o.categorie_regle)}${o.est_recategorisee ? ", sauf celui-ci, classé à la main" : ""}. <button class="lien" data-action="supprimer-regle">Supprimer la règle</button></p>` : ""}
+          <button class="coche ${etat.pourTous ? "active" : ""}" data-action="pour-tous" role="switch" aria-checked="${etat.pourTous}">
+            <span class="case" aria-hidden="true">${etat.pourTous ? "✓" : ""}</span>
+            <span>Toujours classer ce commerçant ici<small>${etat.pourTous ? "Choisis la catégorie : elle vaudra pour tous ses paiements, passés et à venir." : "Sinon, seule cette opération est classée."}</small></span>
+          </button>
           <div class="categories">${etat.categories.filter((c) => c !== A_CLASSER).map((c) => `
             <button class="categorie ${c === o.categorie ? "choisie" : ""}" data-action="classer" data-categorie="${echapper(c)}">${echapper(c)}</button>`).join("")}
           </div>
@@ -1025,8 +1031,19 @@ racine.addEventListener("click", async (evenement) => {
       break;
     case "ouvrir":
       etat.fiche = Number(cible.dataset.id);
+      etat.pourTous = false;
       rendre();
       break;
+    case "pour-tous":
+      etat.pourTous = !etat.pourTous;
+      rendre();
+      break;
+    case "supprimer-regle": {
+      const id = etat.fiche;
+      etat.fiche = null;
+      await enregistrer("supprimer_regle_categorie", { p_transaction_id: id }, "Règle supprimée");
+      break;
+    }
     case "ouvrir-correction":
       etat.ficheCorrection = true;
       rendre();
@@ -1072,8 +1089,14 @@ racine.addEventListener("click", async (evenement) => {
     case "classer": {
       const categorie = cible.dataset.categorie;
       const id = etat.fiche;
+      const pourTous = etat.pourTous;
       etat.fiche = null;
-      await enregistrer("classer_operation", { p_transaction_id: id, p_categorie: categorie }, `Classée dans ${categorie}`);
+      etat.pourTous = false;
+      if (pourTous) {
+        await enregistrer("creer_regle_categorie", { p_transaction_id: id, p_categorie: categorie }, `Ce commerçant ira toujours en ${categorie}`);
+      } else {
+        await enregistrer("classer_operation", { p_transaction_id: id, p_categorie: categorie }, `Classée dans ${categorie}`);
+      }
       break;
     }
     case "annuler-classement": {
