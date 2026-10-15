@@ -21,7 +21,12 @@ Object.assign(etat, {
   afficherTerminees: false,
   espaceAjout: lireEspaceAjout(),
   ficheTache: null,             // id de la tâche ouverte
+  ficheRaccourci: false,        // écran de réglage du raccourci iPhone
+  raccourci: null,              // { actif, cree_le, dernier_usage }
+  jetonAffiche: null,           // jeton tout juste créé, montré une seule fois
 });
+
+const URL_CAPTURE = `${CONFIG.supabaseUrl}/rest/v1/rpc/capturer_tache`;
 
 // ── Données ────────────────────────────────────────────────────────────────────
 // Les tâches ouvertes, et celles terminées depuis moins de 14 jours
@@ -52,12 +57,13 @@ async function enregistrerTache(fonction, parametres, messageOk) {
 
 // ── Classement ─────────────────────────────────────────────────────────────────
 const estOuverte = (t) => t.statut === "a_faire" || t.statut === "en_cours";
+const aTrier = () => etat.taches.filter((t) => t.a_trier && estOuverte(t));
 const estEnRetard = (t) => estOuverte(t) && t.echeance && t.echeance < aujourdhui();
 
 // En retard, prévues aujourd'hui, en cours, ou prioritaires sans date
 function tachesDuJour() {
   const jour = aujourdhui();
-  return etat.taches.filter((t) => estOuverte(t) && (
+  return etat.taches.filter((t) => estOuverte(t) && !t.a_trier && (
     (t.echeance && t.echeance <= jour) || t.statut === "en_cours" || (t.prioritaire && !t.echeance)
   ));
 }
@@ -93,6 +99,7 @@ function enteteTaches() {
     <header class="entete">
       <h1>${titre}</h1>
       <div class="actions">
+        <button class="icone" data-action="ouvrir-raccourci" aria-label="Raccourci iPhone et Siri"><svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/></svg></button>
         <button class="icone" data-action="deconnexion" aria-label="Se déconnecter">${ICONES.sortir}</button>
       </div>
     </header>
@@ -116,7 +123,7 @@ function formulaireAjout() {
 function ligneTache(t) {
   const fini = !estOuverte(t);
   const details = [
-    `<span class="badge-espace ${t.espace}">${ESPACES[t.espace]}</span>`,
+    t.a_trier ? '<span class="badge-trier">à trier</span>' : `<span class="badge-espace ${t.espace}">${ESPACES[t.espace]}</span>`,
     t.echeance ? `<span class="${estEnRetard(t) ? "en-retard" : ""}">${estEnRetard(t) ? "en retard · " : ""}${libelleEcheance(t.echeance)}</span>` : "",
     t.statut === "en_cours" ? "<span>en cours</span>" : "",
     t.statut === "abandonne" ? "<span>abandonnée</span>" : "",
@@ -131,7 +138,10 @@ function ligneTache(t) {
         <span class="titre-tache">${t.prioritaire && !fini ? '<span class="etoile" aria-label="prioritaire">★</span>' : ""}${echapper(t.titre)}</span>
         <span class="details-tache">${details}</span>
       </button>
-    </div>`;
+    </div>
+    ${t.a_trier && !fini ? `<div class="tri-rapide" role="group" aria-label="Ranger dans">${Object.entries(ESPACES).map(([cle, nom]) => `
+      <button class="espace-choix ${cle}" data-action="trier-tache" data-id="${t.id}" data-espace="${cle}">${nom}</button>`).join("")}
+    </div>` : ""}`;
 }
 
 const listeTaches = (taches) => `<div class="liste-taches">${taches.map(ligneTache).join("")}</div>`;
@@ -148,10 +158,15 @@ function ecranAujourdhui() {
   const autres = duJour.filter((t) => !t.echeance || t.echeance > jour);
   const faitesAujourdhui = etat.taches.filter((t) => t.statut === "fait" && t.termine_le && dateIso(new Date(t.termine_le)) === jour);
 
+  const trier = aTrier();
+  const blocTrier = trier.length ? `<h2 class="titre-section">À trier <span class="compte">${trier.length}</span></h2>
+    <p class="note aide">Arrivées par le raccourci ou Siri. Touche un espace pour les ranger.</p>${listeTaches(trier)}` : "";
+
   if (!duJour.length && !faitesAujourdhui.length) {
-    return `<p class="vide">Rien de prévu aujourd'hui.<br>Les tâches datées d'aujourd'hui, en retard, en cours ou prioritaires apparaissent ici.</p>`;
+    return `${blocTrier}<p class="vide">Rien de prévu aujourd'hui.<br>Les tâches datées d'aujourd'hui, en retard, en cours ou prioritaires apparaissent ici.</p>`;
   }
   return `
+    ${blocTrier}
     ${groupe("En retard", enRetard)}
     ${groupe("Aujourd'hui", aujourdhuiMeme)}
     ${groupe("En cours et prioritaires", autres)}
@@ -160,8 +175,8 @@ function ecranAujourdhui() {
 
 function ecranAVenir() {
   const jour = aujourdhui();
-  const ouvertes = etat.taches.filter((t) => estOuverte(t) && t.echeance && t.echeance > jour);
-  const sansDate = etat.taches.filter((t) => estOuverte(t) && !t.echeance);
+  const ouvertes = etat.taches.filter((t) => estOuverte(t) && !t.a_trier && t.echeance && t.echeance > jour);
+  const sansDate = etat.taches.filter((t) => estOuverte(t) && !t.a_trier && !t.echeance);
   const parJour = new Map();
   for (const t of ouvertes.filter((t) => t.echeance <= ajouterJours(jour, 13))) {
     parJour.set(t.echeance, [...(parJour.get(t.echeance) ?? []), t]);
@@ -178,7 +193,7 @@ function ecranAVenir() {
 
 function ecranToutes() {
   const filtre = (t) => !etat.filtreEspace || t.espace === etat.filtreEspace;
-  const ouvertes = etat.taches.filter((t) => estOuverte(t) && filtre(t));
+  const ouvertes = etat.taches.filter((t) => estOuverte(t) && !t.a_trier && filtre(t));
   const finies = etat.taches.filter((t) => !estOuverte(t) && filtre(t))
     .sort((a, b) => (b.termine_le ?? "").localeCompare(a.termine_le ?? ""));
   const espaces = etat.filtreEspace ? [etat.filtreEspace] : Object.keys(ESPACES);
@@ -188,6 +203,7 @@ function ecranToutes() {
       <button class="${!etat.filtreEspace ? "actif" : ""}" data-action="filtre-espace" data-espace="">Tous</button>
       ${Object.entries(ESPACES).map(([cle, nom]) => `<button class="${etat.filtreEspace === cle ? "actif" : ""}" data-action="filtre-espace" data-espace="${cle}">${nom}</button>`).join("")}
     </div>
+    ${!etat.filtreEspace ? groupe("À trier", aTrier()) : ""}
     ${espaces.map((e) => groupe(ESPACES[e], ouvertes.filter((t) => t.espace === e))).join("") || ""}
     ${!ouvertes.length ? `<p class="vide">Aucune tâche ouverte${etat.filtreEspace ? ` dans ${ESPACES[etat.filtreEspace]}` : ""}.</p>` : ""}
     ${finies.length ? `<button class="lien centre" data-action="afficher-terminees">${etat.afficherTerminees ? "Masquer" : "Afficher"} les tâches terminées (${finies.length})</button>` : ""}
@@ -230,8 +246,50 @@ function ficheTache() {
     </div>`;
 }
 
+// Réglage du raccourci iPhone : création du jeton et mode d'emploi pas à pas
+function ficheRaccourci() {
+  const r = etat.raccourci;
+  const copier = (valeur, libelle) => `
+    <div class="valeur-copiable"><code>${echapper(valeur)}</code><button class="bouton secondaire" data-action="copier" data-valeur="${echapper(valeur)}" data-libelle="${echapper(libelle)}">Copier</button></div>`;
+  return `
+    <div class="voile" data-action="fermer-raccourci">
+      <section class="fiche" role="dialog" aria-modal="true" aria-label="Raccourci iPhone">
+        <div class="tete">
+          <h2>Ajouter depuis partout</h2>
+          <button class="icone" data-action="fermer-raccourci" aria-label="Fermer">${ICONES.fermer}</button>
+        </div>
+        <p class="sous">Un raccourci iPhone envoie dans « À trier » un message WhatsApp, un mail, une page web ou une phrase dictée à Siri.</p>
+        ${etat.jetonAffiche ? `
+          <p class="note">Voici ta clé personnelle. Elle ne sera plus affichée : copie-la dans le raccourci maintenant. Elle permet seulement d'ajouter des tâches, pas de les lire.</p>
+          ${copier(etat.jetonAffiche, "Clé personnelle")}` : r?.actif ? `
+          <p class="note">Raccourci actif depuis le ${dateLongue(dateIso(new Date(r.cree_le)))}${r.dernier_usage ? `, dernière utilisation le ${dateLongue(dateIso(new Date(r.dernier_usage)))}` : ", pas encore utilisé"}.</p>` : `
+          <p class="note">Aucun raccourci actif.</p>`}
+        <button class="bouton ${etat.jetonAffiche ? "secondaire" : ""}" data-action="generer-jeton">${r?.actif || etat.jetonAffiche ? "Créer une nouvelle clé (l'ancienne cesse de marcher)" : "Créer ma clé personnelle"}</button>
+        ${r?.actif || etat.jetonAffiche ? `<button class="lien danger centre" data-action="revoquer-jeton">Désactiver le raccourci</button>` : ""}
+
+        <h3>Créer le raccourci dans l'app Raccourcis</h3>
+        <ol class="etapes">
+          <li>Ouvre l'app <strong>Raccourcis</strong>, touche <strong>+</strong> et nomme le raccourci <strong>Ajoute à l'Assistant</strong>. C'est la phrase à dire à Siri.</li>
+          <li>Touche <strong>ⓘ</strong> (en bas) et active <strong>Afficher dans la feuille de partage</strong>.</li>
+          <li>En haut, règle la réception : <strong>Texte et URL</strong> depuis la <strong>feuille de partage</strong>, et <strong>Si aucune entrée : Demander</strong> (c'est ce qui permet de dicter).</li>
+          <li>Ajoute l'action <strong>Obtenir le contenu de l'URL</strong>, avec cette adresse :${copier(URL_CAPTURE, "Adresse")}</li>
+          <li>Déplie <strong>Afficher plus</strong> : méthode <strong>POST</strong>. Dans <strong>En-têtes</strong>, ajoute <code>apikey</code> avec cette valeur :${copier(CONFIG.supabaseKey, "Clé publique")}</li>
+          <li>Dans <strong>Corps de la requête</strong>, choisis <strong>JSON</strong> et ajoute deux champs texte : <code>p_jeton</code> avec ta clé personnelle, et <code>p_texte</code> avec la variable <strong>Entrée du raccourci</strong>.</li>
+          <li>Ajoute l'action <strong>Afficher la notification</strong> avec le résultat, pour voir « Ajouté à l'Assistant ».</li>
+        </ol>
+        <p class="note">Ensuite : dans WhatsApp, appui long sur un message, Partager, Ajoute à l'Assistant. Ou « Dis Siri, ajoute à l'Assistant ».</p>
+      </section>
+    </div>`;
+}
+
+async function chargerRaccourci() {
+  const { data, error } = await sb.rpc("etat_jeton_capture");
+  if (error) throw error;
+  etat.raccourci = data[0] ?? { actif: false };
+}
+
 function barreOngletsTaches() {
-  const nb = tachesDuJour().length;
+  const nb = tachesDuJour().length + aTrier().length;
   const onglet = (id, nom, icone) => `
     <button class="onglet ${etat.ongletTaches === id ? "actif" : ""}" data-action="onglet-taches" data-onglet="${id}">
       ${icone}<span>${nom}</span>${id === "aujourdhui" && nb ? `<span class="pastille">${nb}</span>` : ""}
@@ -252,6 +310,7 @@ function ecranTaches() {
     ${corps}
     ${barreOngletsTaches()}
     ${etat.ficheTache !== null ? ficheTache() : ""}
+    ${etat.ficheRaccourci ? ficheRaccourci() : ""}
     ${etat.message ? `<div class="message" role="status">${echapper(etat.message)}</div>` : ""}`;
 }
 
@@ -306,6 +365,51 @@ async function actionTaches(cible) {
     case "fermer-tache":
       etat.ficheTache = null;
       rendre();
+      return true;
+    case "trier-tache": {
+      const espace = cible.dataset.espace;
+      const t = etat.taches.find((x) => x.id === id);
+      if (t) { t.a_trier = false; t.espace = espace; rendre(); }
+      await enregistrerTache("modifier_tache", { p_id: id, p_espace: espace }, `Rangée dans ${ESPACES[espace]}`);
+      return true;
+    }
+    case "ouvrir-raccourci":
+      etat.ficheRaccourci = true;
+      etat.jetonAffiche = null;
+      rendre();
+      try { await chargerRaccourci(); } catch (e) { console.error(e); }
+      rendre();
+      return true;
+    case "fermer-raccourci":
+      etat.ficheRaccourci = false;
+      etat.jetonAffiche = null;
+      rendre();
+      return true;
+    case "generer-jeton": {
+      if ((etat.raccourci?.actif || etat.jetonAffiche) && !confirm("Créer une nouvelle clé ? Le raccourci actuel cessera de fonctionner tant que tu n'y auras pas collé la nouvelle.")) return true;
+      const { data, error } = await sb.rpc("generer_jeton_capture");
+      if (error) { afficherMessage(error.message); return true; }
+      etat.jetonAffiche = data;
+      try { await chargerRaccourci(); } catch (e) { console.error(e); }
+      rendre();
+      return true;
+    }
+    case "revoquer-jeton": {
+      if (!confirm("Désactiver le raccourci ? Il ne pourra plus rien ajouter.")) return true;
+      const { error } = await sb.rpc("revoquer_jeton_capture");
+      if (error) { afficherMessage(error.message); return true; }
+      etat.jetonAffiche = null;
+      etat.raccourci = { actif: false };
+      afficherMessage("Raccourci désactivé");
+      return true;
+    }
+    case "copier":
+      try {
+        await navigator.clipboard.writeText(cible.dataset.valeur);
+        afficherMessage(`${cible.dataset.libelle} copiée`);
+      } catch {
+        afficherMessage("Copie impossible : sélectionne le texte à la main");
+      }
       return true;
     case "statut-tache": {
       const idTache = etat.ficheTache;

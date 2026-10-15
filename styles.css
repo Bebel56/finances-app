@@ -419,3 +419,24 @@ div.operation { cursor: default; }
 }
 .champ textarea:focus { border-color: var(--accent); }
 #modifier-tache .espaces { margin-bottom: 14px; }
+
+/* ── Capture : à trier, raccourci iPhone ───────────────── */
+.badge-trier { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--alerte-fond); color: var(--alerte); }
+.tri-rapide { display: flex; gap: 6px; padding: 0 0 12px 34px; }
+.tri-rapide .espace-choix { padding: 4px 10px; }
+.tri-rapide .espace-choix.perso { color: var(--perso); border-color: var(--perso); }
+.tri-rapide .espace-choix.molie { color: var(--molie); border-color: var(--molie); }
+.tri-rapide .espace-choix.hexabel { color: var(--hexabel); border-color: var(--hexabel); }
+.liste-taches > .tri-rapide { border-bottom: 1px solid var(--trait); }
+.liste-taches > .tache:has(+ .tri-rapide) { border-bottom: none; }
+.note.aide { margin: -6px 0 10px; }
+.valeur-copiable { display: flex; gap: 8px; align-items: center; margin: 8px 0 12px; }
+.valeur-copiable code {
+  flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px;
+  background: var(--carte); border: 1px solid var(--trait); border-radius: 8px; padding: 8px;
+}
+.valeur-copiable .bouton { width: auto; height: 36px; padding: 0 12px; flex: none; }
+.etapes { padding-left: 20px; margin: 0 0 12px; font-size: 14px; line-height: 1.5; }
+.etapes li { margin-bottom: 10px; }
+.etapes code { font-size: 12px; background: var(--creux); padding: 1px 4px; border-radius: 4px; }
+.fiche > .bouton { margin-bottom: 6px; }
