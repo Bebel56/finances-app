@@ -333,13 +333,14 @@ async function chargerEvolution(forcer = false) {
 }
 
 async function toutCharger() {
-  try {
-    etat.erreur = null;
-    await chargerReferences();
-    await chargerMois();
-  } catch (e) {
-    etat.erreur = "Impossible de charger les données. Vérifie ta connexion.";
-    console.error(e);
+  etat.erreur = null;
+  const finances = (async () => { await chargerReferences(); await chargerMois(); })();
+  const [resultatFinances, resultatTaches] = await Promise.allSettled([finances, chargerTaches()]);
+  for (const r of [resultatFinances, resultatTaches]) {
+    if (r.status === "rejected") {
+      etat.erreur = "Impossible de charger les données. Vérifie ta connexion.";
+      console.error(r.reason);
+    }
   }
   rendre();
 }
@@ -407,8 +408,8 @@ function parCategorie() {
 function ecranConnexion() {
   return `
     <form class="connexion" id="connexion">
-      <h1>Finances</h1>
-      <p>Connecte-toi pour voir tes comptes.</p>
+      <h1>Assistant</h1>
+      <p>Connecte-toi pour retrouver tes tâches et tes comptes.</p>
       ${etat.erreur ? `<p class="erreur">${echapper(etat.erreur)}</p>` : ""}
       <label class="champ"><span>Adresse e-mail</span>
         <input type="email" name="email" autocomplete="username" inputmode="email" autocapitalize="none" required></label>
@@ -454,6 +455,7 @@ function ecranActivation() {
 function entete() {
   const i = etat.listeMois.indexOf(etat.mois);
   return `
+    ${navigationSections()}
     <header class="entete">
       <h1>${etat.mois ? libelleMois(etat.mois) : "Finances"}</h1>
       <div class="actions">
@@ -893,6 +895,11 @@ function rendre() {
   if (!etat.session) { racine.innerHTML = ecranConnexion(); return; }
   if (etat.ecran === "code") { racine.innerHTML = ecranCode(); return; }
   if (etat.ecran === "activation") { racine.innerHTML = ecranActivation(); return; }
+  if (etat.section === "taches") {
+    racine.classList.remove("masque");
+    racine.innerHTML = ecranTaches();
+    return;
+  }
 
   // Conserver la saisie en cours dans la recherche lors d'un nouveau rendu
   const rechercheActive = document.activeElement?.id === "recherche";
@@ -978,7 +985,9 @@ racine.addEventListener("click", async (evenement) => {
   const cible = evenement.target.closest("[data-action]");
   if (!cible) return;
   // Un clic dans la fiche ne doit pas la fermer via le voile
-  if (cible.dataset.action === "fermer" && cible.classList.contains("voile") && evenement.target !== cible) return;
+  if (cible.classList.contains("voile") && evenement.target !== cible) return;
+  // Actions de la section Tâches (taches.js)
+  if (await actionTaches(cible)) return;
 
   switch (cible.dataset.action) {
     case "onglet":
@@ -1183,6 +1192,7 @@ racine.addEventListener("change", (evenement) => {
 racine.addEventListener("submit", async (evenement) => {
   evenement.preventDefault();
   const formulaire = evenement.target;
+  if (await soumettreTaches(formulaire)) return;
 
   if (formulaire.id === "connexion") {
     const donnees = new FormData(formulaire);
@@ -1265,7 +1275,7 @@ sb.auth.onAuthStateChange((evenement, session) => {
     // Hors du rappel d'authentification, pour ne pas bloquer le client Supabase
     setTimeout(apresConnexion, 0);
   } else if (!session) {
-    Object.assign(etat, { operations: [], listeMois: [], mois: null, fiche: null, onglet: "synthese", ecran: null, mfa: null, doubleAuthActive: false, flux: new Map(), depensesMensuelles: [], finFenetre: null, cleEvolution: null, comptes: [], apports: [] });
+    Object.assign(etat, { operations: [], listeMois: [], mois: null, fiche: null, onglet: "synthese", ecran: null, mfa: null, doubleAuthActive: false, flux: new Map(), depensesMensuelles: [], finFenetre: null, cleEvolution: null, comptes: [], apports: [], taches: [], ficheTache: null });
     rendre();
   }
 });

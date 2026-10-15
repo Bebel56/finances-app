@@ -350,3 +350,72 @@ div.operation { cursor: default; }
 .coche small { display: block; font-size: 12px; color: var(--texte-2); margin-top: 2px; }
 .note.regle { margin: 0 0 10px; }
 .note.regle .lien { padding: 0; font-size: 13px; }
+
+/* ── Sections de l'assistant ───────────────────────────── */
+.sections { display: flex; gap: 6px; margin-bottom: 10px; }
+.sections button {
+  border: none; background: none; padding: 4px 10px; border-radius: 999px;
+  font-size: 14px; font-weight: 600; color: var(--texte-3);
+}
+.sections button.actif { background: var(--texte); color: var(--fond); }
+
+/* ── Tâches ────────────────────────────────────────────── */
+:root { --perso: #7f77dd; --molie: #d4537e; --hexabel: #1d9e75; }
+.ajout-tache { background: var(--carte); border-radius: var(--rayon); padding: 12px; margin-bottom: 18px; display: grid; gap: 10px; }
+.ajout-tache input[type="text"] {
+  width: 100%; height: 44px; padding: 0 12px; border: 1px solid var(--trait); border-radius: var(--rayon);
+  background: var(--fond); outline: none;
+}
+.ajout-tache input[type="text"]:focus { border-color: var(--accent); }
+.ajout-options { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ajout-options input[type="date"] {
+  flex: 1; min-width: 130px; height: 36px; padding: 0 8px; border: 1px solid var(--trait); border-radius: var(--rayon);
+  background: var(--fond); color: var(--texte); -webkit-appearance: none; appearance: none;
+}
+.espaces { display: flex; gap: 6px; flex-wrap: wrap; }
+.espace-choix {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--trait); background: var(--fond); border-radius: 999px;
+  padding: 6px 12px; font-size: 13px; color: var(--texte-2);
+}
+.espace-choix input { margin: 0; accent-color: var(--accent); }
+.espace-choix.actif, .espace-choix:has(input:checked) { color: #fff; border-color: transparent; }
+.espace-choix.perso.actif, .espace-choix.perso:has(input:checked) { background: var(--perso); }
+.espace-choix.molie.actif, .espace-choix.molie:has(input:checked) { background: var(--molie); }
+.espace-choix.hexabel.actif, .espace-choix.hexabel:has(input:checked) { background: var(--hexabel); }
+.titre-section .compte { color: var(--texte-3); font-weight: 400; }
+
+.liste-taches { background: var(--carte); border-radius: var(--rayon); padding: 0 12px; margin-bottom: 18px; }
+.tache { display: flex; align-items: flex-start; gap: 10px; border-bottom: 1px solid var(--trait); }
+.tache:last-child { border-bottom: none; }
+.coche-tache {
+  flex: none; width: 24px; height: 24px; margin-top: 12px;
+  border: 1.5px solid var(--texte-3); border-radius: 50%; background: none;
+  display: grid; place-items: center; font-size: 13px; color: var(--carte);
+}
+.coche-tache.faite { background: var(--hexabel); border-color: var(--hexabel); }
+.contenu-tache { flex: 1; min-width: 0; border: none; background: none; text-align: left; padding: 12px 0; }
+.titre-tache { display: block; font-size: 15px; overflow-wrap: anywhere; }
+.etoile { color: var(--alerte-barre); margin-right: 4px; }
+.details-tache { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--texte-3); margin-top: 3px; }
+.details-tache .en-retard { color: var(--negatif); font-weight: 600; }
+.badge-espace { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; color: #fff; }
+.badge-espace.perso { background: var(--perso); }
+.badge-espace.molie { background: var(--molie); }
+.badge-espace.hexabel { background: var(--hexabel); }
+.tache.finie .titre-tache { text-decoration: line-through; color: var(--texte-3); }
+
+.filtres-espaces { display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+.filtres-espaces button { border: none; background: var(--creux); color: var(--texte-2); border-radius: 999px; padding: 6px 12px; font-size: 13px; }
+.filtres-espaces button.actif { background: var(--texte); color: var(--fond); }
+.lien.centre { display: block; margin: 0 auto 14px; }
+.lien.danger { color: var(--negatif); }
+.statuts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.option-ligne { display: flex; align-items: center; gap: 8px; margin: 4px 0 14px; font-size: 15px; }
+.option-ligne input { width: 18px; height: 18px; accent-color: var(--accent); }
+.champ textarea {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--trait); border-radius: var(--rayon);
+  background: var(--carte); font: inherit; color: var(--texte); resize: vertical; outline: none;
+}
+.champ textarea:focus { border-color: var(--accent); }
+#modifier-tache .espaces { margin-bottom: 14px; }
