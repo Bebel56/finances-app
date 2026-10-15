@@ -128,6 +128,7 @@ function ligneTache(t) {
     t.statut === "en_cours" ? "<span>en cours</span>" : "",
     t.statut === "abandonne" ? "<span>abandonnée</span>" : "",
     t.source === "intranet" ? "<span>intranet</span>" : "",
+    t.source === "mail" ? "<span>mail</span>" : "",
     t.note ? "<span>note</span>" : "",
   ].filter(Boolean).join("");
   return `
@@ -221,6 +222,7 @@ function ficheTache() {
           <h2>${intranet ? echapper(t.titre) : "Modifier la tâche"}</h2>
           <button class="icone" data-action="fermer-tache" aria-label="Fermer">${ICONES.fermer}</button>
         </div>
+        ${t.source === "mail" && t.source_url ? `<p class="note">Tâche issue d'un mail. <a class="lien" href="${echapper(t.source_url)}" target="_blank" rel="noopener">Ouvrir le mail</a></p>` : ""}
         ${intranet ? `<p class="note">Tâche recopiée de l'intranet Molie : elle se modifie dans l'intranet.${t.source_url ? ` <a class="lien" href="${echapper(t.source_url)}" target="_blank" rel="noopener">Ouvrir dans l'intranet</a>` : ""}</p>` : `
         <form id="modifier-tache" autocomplete="off">
           <label class="champ"><span>Titre</span>
